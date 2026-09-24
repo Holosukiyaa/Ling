@@ -10,7 +10,7 @@ python -m ling --database PATH
 
 `LING_DATABASE` 可以代替 `--database`。协议输出只走 stdout，提示和日志走 stderr。
 
-Agent Coordinator 观测是可选的。只有 `LING_COORDINATOR_URL` 非空时，成功的本地 MCP 调用才会把槽位在线状态和活动投影出去。未设置或为空时完全关闭，Ling 不产生外部请求。投影失败不改变本地结果。
+Agent Coordinator 观测是可选的。只有 `LING_COORDINATOR_URL` 非空时，成功的本地 MCP 调用才会把槽位在线状态和活动放进后台队列。MCP 结果不等待这些 HTTP 请求。队列有上限，满了就丢弃新的观测并记 stderr。未设置或为空时完全关闭，不创建后台线程，也不产生外部请求。投影失败不改变本地结果。
 
 Agent Coordinator 不参与 claim、file lock、票据状态机，也不启动 Agent。`http://localhost:9889/dashboard` 是可选观测服务自己的页面，不是 Ling 的依赖。投影用的 agent id 由 slot id 哈希得到，只存在于这次观测请求里，不是 Ling domain 的 external agent id。
 

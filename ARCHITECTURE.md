@@ -96,6 +96,7 @@ ling/
 │     │  │  ├─ repositories.py
 │     │  │  └─ unit_of_work.py
 │     │  ├─ coordinator/           # 可选观测投影；不参与本地治理
+│     │  │  ├─ async_observer.py   # 有上限的后台队列
 │     │  │  └─ http_observer.py
 │     │  └─ ag/                    # 空目录；ag 不是运行时依赖
 │     └─ interfaces/
@@ -171,7 +172,7 @@ SQLite 用 WAL。读到第一次 `get` 时开启 `BEGIN IMMEDIATE`，把同一�
 
 ## 6. MCP 边界
 
-MCP 只是入站适配器。每个工具只做参数解析、身份提取、调用 application 用例和错误映射，不包含权限判断、SQL 或 HTTP 调用。本地结果确定之后，server 才把 `ok=true` 的调用交给可选的 `RuntimeObserver`。观测失败只留在 stderr，不能改写本地结果，也不能把成功变成 `internal`。
+MCP 只是入站适配器。每个工具只做参数解析、身份提取、调用 application 用例和错误映射，不包含权限判断、SQL 或 HTTP 调用。本地结果确定之后，server 才把 `ok=true` 的调用交给可选的 `RuntimeObserver`。观测进入 infrastructure 的后台队列后立即返回，不等待 HTTP。失败结果、未知工具和 dashboard 不进入队列。队列满或投影失败只留在 stderr，不能改写本地结果，也不能把成功变成 `internal`。
 
 第一批工具可以稳定为：
 
@@ -209,7 +210,7 @@ application use case
 
 Ling 是槽位、票据、队列、文件锁和权限的唯一事实来源。claim、放弃领取、file lock、票据状态机和 Agent 启动都不经过 Agent Coordinator。Agent Coordinator 只接收成功调用之后的观测投影，不能影响 Ling 的本地结果。
 
-这层观测是可选的，只存在于 `infrastructure.coordinator`，是运行时适配器。`application` 不调用它。`LING_COORDINATOR_URL` 未设置或为空时使用 `NullRuntimeObserver`，进程不产生任何外部请求。设置之后，该适配器用标准库在有限超时内投递注册、心跳和活动。超时、连接失败、非 2xx 和无法解析的响应只记 stderr。`LING_COORDINATOR_TIMEOUT` 非法时使用 0.5 秒。`LING_COORDINATOR_WORKSPACE` 未设置时使用进程当前工作目录。
+这层观测是可选的，只存在于 `infrastructure.coordinator`，是运行时适配器。`application` 不调用它，端口上也没有关闭方法。`LING_COORDINATOR_URL` 未设置或为空时使用 `NullRuntimeObserver`，不创建后台线程，也不产生任何外部请求。设置之后，一条 daemon 线程用标准库投递注册、心跳和活动。MCP 调用只负责入队。超时、连接失败、非 2xx 和无法解析的响应只记 stderr。`LING_COORDINATOR_TIMEOUT` 非法时使用 0.5 秒。`LING_COORDINATOR_WORKSPACE` 未设置时使用进程当前工作目录。服务关闭时放弃尚未发送的观测，不等待正在进行的 HTTP，也不提交或回滚本地数据库。
 
 投影 agent id 是 `ling-` 加上 slot id 的 SHA-256 十六进制摘要前 24 位。它不是 Ling domain 的 external agent id，不写入 domain、SQLite 或 DTO。`application` 的 `RuntimeObserver` 只接受 tool name、arguments 和 result 这三组普通数据，用例和 domain 不依赖 HTTP。
 

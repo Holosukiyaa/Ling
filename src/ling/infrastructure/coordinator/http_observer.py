@@ -18,6 +18,7 @@ from typing import Any
 from urllib.parse import quote
 
 from ling.application.ports.observer import NullRuntimeObserver, RuntimeObserver
+from ling.infrastructure.coordinator.async_observer import AsyncRuntimeObserver
 
 logger = logging.getLogger(__name__)
 
@@ -86,11 +87,13 @@ def observer_from_environ(environ: Mapping[str, str] | None = None) -> RuntimeOb
         return NullRuntimeObserver()
     workspace = str(env.get("LING_COORDINATOR_WORKSPACE") or "").strip() or os.getcwd()
     api_key = str(env.get("LING_COORDINATOR_API_KEY") or "").strip()
-    return HttpRuntimeObserver(
-        base_url=base.rstrip("/"),
-        workspace=workspace,
-        api_key=api_key,
-        timeout=timeout_seconds(env.get("LING_COORDINATOR_TIMEOUT")),
+    return AsyncRuntimeObserver(
+        HttpRuntimeObserver(
+            base_url=base.rstrip("/"),
+            workspace=workspace,
+            api_key=api_key,
+            timeout=timeout_seconds(env.get("LING_COORDINATOR_TIMEOUT")),
+        )
     )
 
 
