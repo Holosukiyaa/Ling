@@ -14,6 +14,7 @@ bootstrap -> interfaces, application, infrastructure
 本地检查：
 
 ```text
-python -m pytest
-python -c "import ling"
+pip install -e ".[dev]"
+python -m pytest -q
+python -c "import ling.domain"
 ```
