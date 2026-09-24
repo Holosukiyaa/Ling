@@ -4,9 +4,11 @@
 
 Ling 是多 AI 协作的任务、权限和状态控制内核。它不负责启动模型，也不负责实现模型的对话循环。
 
-一个 AI 运行时通过 MCP 连接 Ling，获得一个由模板声明出来的槽位。Grok Build CLI 这类自带 loop 的运行时可以长期运行自己的循环，按需调用 Ling 的 MCP 工具。Ling 只决定“谁可以在什么时候对哪张票做哪一步”，不决定模型如何思考。
+Ling 由调用方驱动。用户自己启动 Agent。Agent 主动连接 Ling。Ling 不启动 Agent，不选择模型，也不适配某一种 Agent 产品。没有外部 Agent Coordinator 时，注册、心跳、派发、领取、提交、审核、消费和文件锁都在 Ling 本地完成。
 
-Ling 是独立项目，不修改 `C:\WorkSpace\Code\ag` 的目录、包名和命令。代码票进入 worker 后，仍由 ag 完成工作树、验收、switch 和最终收口。
+一个 AI 运行时通过 MCP 连接 Ling，获得一个由模板声明出来的槽位。自带 loop 的运行时可以长期运行自己的循环，按需调用 Ling 的 MCP 工具。Ling 只决定“谁可以在什么时候对哪张票做哪一步”，不决定模型如何思考。MCP 服务本身还没有实现。
+
+Ling 是独立项目。`ag` 是 Ling 的开发交付治理工具，不是 Ling 运行时必须调用的服务。Ling 不修改 `C:\WorkSpace\Code\ag` 的目录、包名和命令。代码票进入 worker 后，worker 仍可在自己的环境里使用 ag 完成工作树、验收、switch 和最终收口。
 
 ## 2. 分层
 
@@ -21,7 +23,7 @@ Ling 是独立项目，不修改 `C:\WorkSpace\Code\ag` 的目录、包名和命
           ┌─────────────────────┼─────────────────────┐
           │                     │                     │
    interfaces              infrastructure       application
-   MCP / CLI / HTTP       SQLite / HTTP / ag     用例和端口
+   MCP / CLI / HTTP       SQLite                 本地用例和端口
           │                     │                     │
           └───────────────┬─────┴─────────────────────┘
                           │
@@ -66,7 +68,7 @@ ling/
 │     │  │  ├─ states.py          # queued/claimed/...
 │     │  │  └─ transitions.py     # transitions 的进程内封装
 │     │  ├─ queues.py              # 三条队列的领域语义
-│     │  ├─ locks.py               # 消费锁语义
+│     │  ├─ locks.py               # 消费锁和本地文件锁
 │     │  └─ errors.py              # 领域错误
 │     ├─ application/
 │     │  ├─ commands/              # 写操作用例
@@ -82,7 +84,6 @@ ling/
 │     │  │  └─ dashboard.py
 │     │  ├─ ports/                  # application 需要的外部能力
 │     │  │  ├─ repositories.py
-│     │  │  ├─ coordinator.py
 │     │  │  ├─ unit_of_work.py
 │     │  │  ├─ clock.py
 │     │  │  └─ id_generator.py
@@ -93,10 +94,8 @@ ling/
 │     │  │  ├─ schema.py
 │     │  │  ├─ repositories.py
 │     │  │  └─ unit_of_work.py
-│     │  ├─ coordinator/
-│     │  │  └─ http_client.py      # localhost:9889 适配器
-│     │  ├─ ag/
-│     │  │  └─ delivery_gateway.py # 后续接入 ag 命令，不导入 ag 包
+│     │  ├─ coordinator/           # 空目录；当前不定义出站协议
+│     │  ├─ ag/                    # 空目录；ag 不是运行时依赖
 │     │  └─ system_clock.py
 │     └─ interfaces/
 │        ├─ mcp/
@@ -105,11 +104,6 @@ ling/
 │        │  └─ tools/
 │        ├─ cli/                    # 后续的人工运维入口
 │        └─ http/                   # 后续 FastAPI 入口，第一版不实现
-└─ tests/
-   ├─ unit/domain/
-   ├─ unit/application/
-   ├─ integration/
-   └─ architecture/                # import 方向检查
 ```
 
 ## 4. Domain 核心模型
@@ -125,10 +119,10 @@ ling/
 核心对象：
 
 - `Template`：模板声明、等级、能力和可管理的模板类型。
-- `Slot`：模板的一次实例化，拥有稳定的 slot id、外部 coordinator agent id、在线状态和心跳时间。
+- `Slot`：模板的一次实例化，拥有稳定的 slot id、在线状态和最近心跳时间。slot id 不是外部系统的 agent id。
 - `Ticket`：全程不变的 ticket id、发起槽位、目标类型、任务内容、当前状态、当前队列、领取者和结果。
 - `ConsumptionLock`：防止同一个 mentor 在前一张结果未消费前重复派发；它是 Ling 自己的记录。
-- `FileLock`：代码写入前由 Agent Coordinator 提供的租约；Ling 通过端口调用，不伪造文件锁。
+- `FileLock`：Ling 自己记录的路径占用，包含 ticket、持有槽位和路径集合。它不是操作系统文件锁。消费该票时释放。票仍处于 claimed 时，当前命令不能单独释放它。
 
 票据状态和队列的映射固定为：
 
@@ -147,28 +141,27 @@ mentor 消费     consumed     不再可消费
 
 ## 5. Application 用例
 
-每个命令是一个独立用例，负责一次完整的授权、状态机和外部调用协调：
+每个命令是一个独立的本地用例，负责一次完整的授权和状态机协调。这些用例不调用外部 Agent Coordinator。
 
 | 用例 | 调用者 | 主要动作 |
 | --- | --- | --- |
-| `register_slot` | 任意 AI 运行时 | 校验模板，创建槽位，调用 `/agents/register` |
-| `heartbeat` | 已注册槽位 | 更新心跳，调用 `/agents/{id}/heartbeat` |
+| `register_slot` | 任意已连接的客户端 | 校验模板，在 Ling 本地创建槽位 |
+| `heartbeat` | 已注册槽位 | 把槽位标为在线，并写入最近心跳时间 |
 | `dispatch` | mentor | 校验等级和消费锁，创建队列 1 票 |
-| `claim` | worker | 校验槽位和票，确认状态机允许后调用 `/tasks/claim`；成功才记录领取者 |
+| `claim` | worker | 校验槽位、queued 状态和领取冲突，在本地事务中记录领取者 |
 | `submit` | worker | 校验领取者，把票从队列 1 推到队列 3 |
 | `review` | checker | 从队列 3 取票，产生 accepted/rejected 结论并放入队列 2 |
-| `consume` | 原 mentor | 只能消费自己发出的 ticket id，消费后释放消费锁 |
-| `acquire_file_lock` | 已领取代码票的 worker | 调用 `/locks/acquire`，没有租约就不能写文件 |
-| `dashboard` | 操作员/只读客户端 | 汇总 Ling 记录和 coordinator 状态 |
+| `consume` | 原 mentor | 只能消费自己发出的 ticket id；消费后释放消费锁和该票的文件锁 |
+| `acquire_file_lock` | 已领取票的 worker | 在 Ling 本地记录 ticket、持有槽位和路径；冲突路径不能被另一张票占用 |
+| `dashboard` | 操作员/只读客户端 | 尚未实现 |
 
 每个命令遵循同一顺序：
 
-1. 在 Ling 的事务中读取槽位、票据和消费锁，完成权限检查。
-2. 调用领域状态机验证目标转移。
-3. 必要时调用 Agent Coordinator。
-4. 外部成功后提交 Ling 状态；失败则保持原状态和原队列。
+1. 在 Ling 的事务中读取槽位、票据和锁，完成权限检查。
+2. 调用领域规则或状态机验证目标变化。
+3. 检查通过后提交 Ling 状态；失败则保持原状态和原队列。
 
-外部调用使用 ticket id 或 operation id 做幂等键。SQLite 用 WAL 和短事务；领取、消费和派发必须有唯一约束，防止两个 MCP 请求同时成功。对“外部成功但本地提交失败”的情况保留操作记录，允许使用相同 id 重试，不通过猜测状态补写队列。
+SQLite 用 WAL。读到第一次 `get` 时开启 `BEGIN IMMEDIATE`，把同一次用例里的读取和写入放进同一个写事务，避免两个领取同时成功。领取、消费和派发仍靠领域检查；槽位、票据和路径另有唯一约束，重复插入不会静默覆盖。
 
 ## 6. MCP 边界
 
@@ -188,46 +181,38 @@ ling_acquire_file_lock
 ling_dashboard
 ```
 
-工具返回统一的结构化结果：`ok`、`operation_id`、`ticket_id`、`state`、`queue`、`error_code` 和可读消息。错误码区分 `forbidden`、`invalid_transition`、`already_claimed`、`not_found`、`coordinator_unavailable`、`conflict`，这样 Grok 的 loop 可以决定等待、重试还是结束本轮。
+工具返回统一的结构化结果：`ok`、`operation_id`、`ticket_id`、`state`、`queue`、`error_code` 和可读消息。错误码区分 `forbidden`、`invalid_transition`、`already_claimed`、`not_found`、`conflict`，这样调用方的 loop 可以决定等待、重试还是结束本轮。
 
-Grok Build CLI 的 loop 位于 Ling 进程之外：
+调用方的 loop 位于 Ling 进程之外：
 
 ```text
-Grok Build CLI loop
-        │ MCP stdio
+调用方自己的 Agent loop
+        │ MCP stdio（尚未实现）
         ▼
 interfaces.mcp
         ▼
 application use case
         ├─ domain rules + transitions
-        ├─ Ling SQLite
-        └─ Agent Coordinator HTTP
+        └─ Ling SQLite
 ```
 
-因此，给 Grok 分配一个 worker 槽位只需要注册一份模板声明和运行一个 MCP 客户端，不需要 Ling 知道 Grok 的内部循环实现。以后接入别的 AI，只增加客户端配置或新的槽位声明，不改领域规则。
+因此，给一个运行时分配 worker 槽位只需要注册一份模板声明，并让该运行时自己连接 Ling。Ling 不知道该运行时的内部循环，也不绑定具体产品。
 
-## 7. Agent Coordinator 适配边界
+## 7. 外部系统边界
 
-第一版只依赖这些接口：
+本地治理不依赖 Agent Coordinator、HTTP 服务或某个 Agent CLI。`application` 不定义出站协调协议，也不发明一套 HTTP/JSON 接口。
 
-- `POST /agents/register`
-- `POST /agents/{id}/heartbeat`
-- `POST /tasks/claim`
-- `POST /locks/acquire`
-- 现有 `GET /dashboard` 供操作员查看
+如果将来确有一个外部系统要参与，只能作为可选适配器加在 infrastructure，不能变成用例的必需参数。那个适配器出现之前，不预写它的协议。
 
-Agent Coordinator 不是 Ling 的权威数据源，也不接管验收、switch 和收口。`infrastructure/coordinator/http_client.py` 实现 `application.ports.CoordinatorPort`，返回 application 能理解的结果；任何 HTTP 状态码和 JSON 细节都在适配器内消化。
-
-后续接 ag 时只增加 `DeliveryGateway` 适配器。Ling 不 import `ag`，不改 ag 仓库；worker 在自己的代码票上下文中继续执行原有 ag 命令链。
+Ling 不 import `ag`。`ag` 不是运行时服务。worker 如果要在自己的代码票里使用 ag，那是 worker 环境里的事，不是 Ling 用例的一步。
 
 ## 8. 实施顺序
 
 1. 建立 `pyproject.toml`、`src/ling` 和 import 方向检查。
 2. 完成 domain：模板、槽位、票据、三队列、消费锁和完整状态机。
-3. 完成 SQLite repository、事务和幂等操作记录；用 fake coordinator 写 application 测试。
-4. 接入真实 Agent Coordinator HTTP 适配器和槽位注册/心跳/抢票/文件锁。
-5. 接入 MCP stdio 工具，让 Grok Build CLI 可以驱动完整票据流。
-6. 增加只读 dashboard 查询，并在最后接入 ag 的工作树、验收、switch 和收口。
+3. 完成 SQLite repository 和短事务。注册、心跳、领取和文件锁都写入 Ling 自己的表。
+4. 接入 MCP stdio 工具，让调用方自己的 Agent loop 可以驱动完整票据流。
+5. 增加只读 dashboard 查询。
 
-第一版不实现 FastAPI 页面、模型启动器、LangGraph/Studio、收费云适配器或 Agent Coordinator 的替代实现。
+第一版不实现 FastAPI 页面、模型启动器、具体 Agent 适配器，也不把外部 Coordinator 当成运行时依赖。
 

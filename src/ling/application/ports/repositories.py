@@ -6,7 +6,7 @@ from typing import Protocol
 
 from ling.domain.agents.values import SlotId
 from ling.domain.agents.entities import Slot
-from ling.domain.locks import ConsumptionLock
+from ling.domain.locks import ConsumptionLock, FileLock
 from ling.domain.tickets.entities import Ticket, TicketId
 
 
@@ -47,3 +47,22 @@ class ConsumptionLockRepository(Protocol):
 
     def save(self, lock: ConsumptionLock) -> None:
         """Stage `lock` until the unit of work commits."""
+
+
+class FileLockRepository(Protocol):
+    """Load and stage one file-lock record per ticket."""
+
+    def get(self, ticket_id: TicketId) -> FileLock | None:
+        """Return the ticket's file lock staged in this unit of work, or None."""
+
+    def find(self, ticket_id: TicketId) -> FileLock | None:
+        """Alias of `get`."""
+
+    def held(self) -> tuple[FileLock, ...]:
+        """Return every file lock visible in this unit of work."""
+
+    def save(self, lock: FileLock) -> None:
+        """Stage `lock` until the unit of work commits."""
+
+    def release(self, ticket_id: TicketId) -> None:
+        """Stage removal of the ticket's file lock. Commit publishes the removal."""

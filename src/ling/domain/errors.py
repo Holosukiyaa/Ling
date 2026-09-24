@@ -53,3 +53,9 @@ class LockMismatch(DomainError):
     """The lock is held for a different ticket than the one being released."""
 
     code = "lock_mismatch"
+
+
+class FilePathHeld(DomainError):
+    """A requested path is already recorded for another file lock."""
+
+    code = "conflict"

@@ -7,13 +7,14 @@ from typing import Protocol, Self
 
 from ling.application.ports.repositories import (
     ConsumptionLockRepository,
+    FileLockRepository,
     SlotRepository,
     TicketRepository,
 )
 
 
 class UnitOfWork(Protocol):
-    """Transaction boundary for slots, tickets, and consumption locks.
+    """Transaction boundary for slots, tickets, consumption locks, and file locks.
 
     Implementations must not expose a database driver. `commit` is the only
     point at which staged saves become durable. `rollback` drops the stage.
@@ -22,6 +23,7 @@ class UnitOfWork(Protocol):
     slots: SlotRepository
     tickets: TicketRepository
     consumption_locks: ConsumptionLockRepository
+    file_locks: FileLockRepository
 
     def commit(self) -> None:
         """Publish staged aggregates in the order they were saved."""

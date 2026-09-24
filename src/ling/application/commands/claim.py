@@ -1,15 +1,14 @@
-"""Claim a queued ticket only after the coordinator grants it."""
+"""Claim a queued ticket inside Ling's own transaction."""
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from ling.application.commands.support import (
-    call_coordinator,
-    coordinator_code,
     domain_code,
     load_slot,
     load_ticket,
     not_found,
-    parse_agent_id,
     parse_slot_id,
     parse_ticket_id,
 )
@@ -22,7 +21,6 @@ from ling.application.dto import (
     ClaimResult,
 )
 from ling.application.ports.clock import Clock
-from ling.application.ports.coordinator import CoordinatorPort
 from ling.application.ports.id_generator import IdGenerator
 from ling.application.ports.unit_of_work import UnitOfWork
 from ling.domain.agents.entities import WORKER_ID
@@ -35,11 +33,10 @@ def execute(
     command: ClaimCommand,
     *,
     uow: UnitOfWork,
-    coordinator: CoordinatorPort,
     ids: IdGenerator,
     clock: Clock,
 ) -> ClaimResult:
-    """Confirm the ticket is queued, claim externally, then record the claimant."""
+    """Check the worker and the queued ticket, then record the claimant."""
 
     operation_id = ids.new_operation_id()
     occurred_at = clock.now()
@@ -53,18 +50,6 @@ def execute(
             occurred_at=occurred_at,
             error_code=INVALID_INPUT,
             message="actor slot id and ticket id must be non-empty strings",
-        )
-    try:
-        agent_id = parse_agent_id(command.agent_id)
-    except ValueError as exc:
-        uow.rollback()
-        return ClaimResult(
-            ok=False,
-            operation_id=operation_id,
-            occurred_at=occurred_at,
-            ticket_id=ticket_id.value,
-            error_code=INVALID_INPUT,
-            message=str(exc),
         )
     actor = load_slot(uow, actor_id)
     if actor is None:
@@ -85,8 +70,6 @@ def execute(
         uow.rollback()
         code, message = not_found(f"ticket {ticket_id.value} does not exist")
         return _failed(operation_id, occurred_at, code, message, ticket_id=ticket_id.value)
-    # Mirror Ticket.claim's guards. The transition runs only after the
-    # coordinator accepts, and only then is the claimant written.
     if ticket.state is TicketState.CLAIMED or ticket.claimant is not None:
         uow.rollback()
         return _snapshot(
@@ -107,24 +90,6 @@ def execute(
             error_code=INVALID_TRANSITION,
             message=f"cannot claim from {ticket.state.value}",
         )
-    external = call_coordinator(
-        lambda: coordinator.claim_task(
-            slot_id=actor.slot_id.value,
-            agent_id=agent_id,
-            ticket_id=ticket.ticket_id.value,
-            operation_id=operation_id,
-        )
-    )
-    if not external.ok:
-        uow.rollback()
-        return _snapshot(
-            operation_id,
-            occurred_at,
-            ticket,
-            ok=False,
-            error_code=coordinator_code(external),
-            message=external.message,
-        )
     try:
         ticket.claim(actor.slot_id)
     except DomainError as exc:
@@ -139,26 +104,17 @@ def execute(
         )
     uow.tickets.save(ticket)
     uow.commit()
-    return _snapshot(
-        operation_id,
-        occurred_at,
-        ticket,
-        ok=True,
-        message=external.message,
-    )
+    return _snapshot(operation_id, occurred_at, ticket, ok=True, message="claimed")
 
 
 def _failed(
     operation_id: str,
-    occurred_at: object,
+    occurred_at: datetime,
     code: str,
     message: str,
     *,
     ticket_id: str | None,
 ) -> ClaimResult:
-    from datetime import datetime
-
-    assert isinstance(occurred_at, datetime)
     return ClaimResult(
         ok=False,
         operation_id=operation_id,
@@ -171,16 +127,13 @@ def _failed(
 
 def _snapshot(
     operation_id: str,
-    occurred_at: object,
+    occurred_at: datetime,
     ticket: Ticket,
     *,
     ok: bool,
     message: str,
     error_code: str | None = None,
 ) -> ClaimResult:
-    from datetime import datetime
-
-    assert isinstance(occurred_at, datetime)
     queue = ticket.queue
     claimant = ticket.claimant
     return ClaimResult(

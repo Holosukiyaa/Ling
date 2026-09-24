@@ -14,7 +14,6 @@ from ling.application.commands.support import (
 )
 from ling.application.dto import FORBIDDEN, INVALID_INPUT, ReviewCommand, ReviewResult
 from ling.application.ports.clock import Clock
-from ling.application.ports.coordinator import CoordinatorPort
 from ling.application.ports.id_generator import IdGenerator
 from ling.application.ports.unit_of_work import UnitOfWork
 from ling.domain.agents.entities import CHECKER_ID
@@ -26,13 +25,11 @@ def execute(
     command: ReviewCommand,
     *,
     uow: UnitOfWork,
-    coordinator: CoordinatorPort,
     ids: IdGenerator,
     clock: Clock,
 ) -> ReviewResult:
     """Accept or reject a submitted ticket. The consumption lock is not saved."""
 
-    del coordinator
     operation_id = ids.new_operation_id()
     occurred_at = clock.now()
     actor_id = parse_slot_id(command.actor_slot_id)

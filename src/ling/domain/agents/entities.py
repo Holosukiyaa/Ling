@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 
 from ling.domain.agents.values import Level, SlotId, TemplateId
 
@@ -18,10 +19,27 @@ class Template:
 
 @dataclass(frozen=True, slots=True)
 class Slot:
-    """A template instance identified for domain rules. No presence or heartbeat."""
+    """A template instance. Presence is Ling's own online flag and heartbeat time.
+
+    There is no external agent id on this object. Callers are addressed by `slot_id`.
+    """
 
     slot_id: SlotId
     template: Template
+    online: bool = False
+    last_heartbeat_at: datetime | None = None
+
+    def record_heartbeat(self, at: datetime) -> Slot:
+        """Return this slot marked online at `at`. `at` must carry a timezone."""
+
+        if not isinstance(at, datetime) or at.tzinfo is None:
+            raise ValueError("heartbeat time must be timezone-aware")
+        return Slot(
+            slot_id=self.slot_id,
+            template=self.template,
+            online=True,
+            last_heartbeat_at=at,
+        )
 
 
 MENTOR_ID = TemplateId("mentor")

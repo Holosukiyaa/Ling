@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+import threading
 from collections.abc import Callable
 from pathlib import Path
 from types import TracebackType
@@ -11,9 +12,11 @@ from ling.infrastructure.persistence.sqlite.connection import connect
 from ling.infrastructure.persistence.sqlite.errors import StorageError
 from ling.infrastructure.persistence.sqlite.repositories import (
     SqliteConsumptionLockRepository,
+    SqliteFileLockRepository,
     SqliteSlotRepository,
     SqliteTicketRepository,
     insert_aggregate,
+    release_file_lock_rows,
     update_aggregate,
 )
 from ling.infrastructure.persistence.sqlite.schema import initialize
@@ -25,6 +28,7 @@ class SqliteDatabase:
     def __init__(self, path: str | Path) -> None:
         self.path = str(path)
         self._units: list[SqliteUnitOfWork] = []
+        self._units_lock = threading.Lock()
         with _closing(connect(self.path)) as connection:
             initialize(connection)
 
@@ -32,15 +36,17 @@ class SqliteDatabase:
         """Open a new unit of work on its own connection."""
 
         unit = SqliteUnitOfWork(connect(self.path), on_close=self._forget)
-        self._units.append(unit)
+        with self._units_lock:
+            self._units.append(unit)
         return unit
 
     def close(self) -> None:
         """Close every unit of work still open on this database."""
 
-        for unit in list(self._units):
+        with self._units_lock:
+            units = list(self._units)
+        for unit in units:
             unit.close()
-        self._units.clear()
 
     def __enter__(self) -> SqliteDatabase:
         return self
@@ -54,10 +60,11 @@ class SqliteDatabase:
         self.close()
 
     def _forget(self, unit: SqliteUnitOfWork) -> None:
-        try:
-            self._units.remove(unit)
-        except ValueError:
-            return
+        with self._units_lock:
+            try:
+                self._units.remove(unit)
+            except ValueError:
+                return
 
 
 class SqliteUnitOfWork:
@@ -79,10 +86,12 @@ class SqliteUnitOfWork:
         self._on_close = on_close
         self._staged: list[tuple[str, str, object]] = []
         self._loaded: set[tuple[str, str]] = set()
+        self._released_file_locks: set[str] = set()
         self._transaction = False
         self.slots = SqliteSlotRepository(self)
         self.tickets = SqliteTicketRepository(self)
         self.consumption_locks = SqliteConsumptionLockRepository(self)
+        self.file_locks = SqliteFileLockRepository(self)
 
     def _connection(self) -> sqlite3.Connection:
         """The open connection. Closed units raise `StorageError`."""
@@ -110,6 +119,24 @@ class SqliteUnitOfWork:
 
         self._loaded.add((kind, key))
 
+    def begin_for_read(self) -> None:
+        """Hold the writer lock from the first read through commit or rollback."""
+
+        self._begin()
+
+    def release_file_lock(self, ticket_id: str) -> None:
+        """Stage removal of one file lock. A later save of that ticket cancels it."""
+
+        self._released_file_locks.add(ticket_id)
+        self._staged = [
+            item for item in self._staged if not (item[0] == "file_lock" and item[1] == ticket_id)
+        ]
+
+    def file_lock_released(self, ticket_id: str) -> bool:
+        """True when this unit of work has staged that ticket's file lock for removal."""
+
+        return ticket_id in self._released_file_locks
+
     def commit(self) -> None:
         """Write the stage in save order and publish it. Failures roll back."""
 
@@ -118,24 +145,31 @@ class SqliteUnitOfWork:
         self._begin()
         try:
             for kind, key, item in self._staged:
+                if kind == "file_lock" and key in self._released_file_locks:
+                    continue
                 identity = (kind, key)
                 if identity in self._loaded or identity in written:
                     update_aggregate(connection, kind, item)
                 else:
                     insert_aggregate(connection, kind, item)
                 written.add(identity)
+            for ticket_id in self._released_file_locks:
+                release_file_lock_rows(connection, ticket_id)
             connection.execute("COMMIT")
         except Exception:
             self._rollback_sql()
             raise
         self._transaction = False
         self._loaded.update(written)
+        self._loaded.difference_update(("file_lock", ticket_id) for ticket_id in self._released_file_locks)
+        self._released_file_locks.clear()
         self._staged.clear()
 
     def rollback(self) -> None:
         """Drop the stage. Rows published by an earlier commit stay in place."""
 
         self._staged.clear()
+        self._released_file_locks.clear()
         self._rollback_sql()
 
     def close(self) -> None:
@@ -144,6 +178,7 @@ class SqliteUnitOfWork:
         if self._conn is None:
             return
         self._staged.clear()
+        self._released_file_locks.clear()
         self._rollback_sql()
         self._conn.close()
         self._conn = None

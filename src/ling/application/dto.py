@@ -10,7 +10,6 @@ FORBIDDEN = "forbidden"
 INVALID_TRANSITION = "invalid_transition"
 ALREADY_CLAIMED = "already_claimed"
 NOT_FOUND = "not_found"
-COORDINATOR_UNAVAILABLE = "coordinator_unavailable"
 CONFLICT = "conflict"
 NOT_CLAIMANT = "not_claimant"
 NOT_ISSUER = "not_issuer"
@@ -29,42 +28,34 @@ class RegisterSlotCommand:
 
 @dataclass(frozen=True, slots=True)
 class RegisterSlotResult:
-    """Saved slot, or a distinguishable failure with no local slot.
-
-    `external_agent_id` is copied only from the coordinator result.
-    It is not written onto the slot.
-    """
+    """Saved local slot, or a distinguishable failure with no local slot."""
 
     ok: bool
     operation_id: str
     occurred_at: datetime
     slot_id: str | None = None
     template_id: str | None = None
-    external_agent_id: str | None = None
     error_code: str | None = None
     message: str = ""
 
 
 @dataclass(frozen=True, slots=True)
 class HeartbeatCommand:
-    """One heartbeat from an already registered slot.
-
-    `agent_id` is the coordinator agent id when the caller has one.
-    It is never taken from `slot_id`.
-    """
+    """One heartbeat from an already registered slot."""
 
     slot_id: str
-    agent_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class HeartbeatResult:
-    """Coordinator heartbeat outcome. Domain slot fields are unchanged."""
+    """Local presence update. `online` is true only after a successful heartbeat."""
 
     ok: bool
     operation_id: str
     occurred_at: datetime
     slot_id: str | None = None
+    online: bool | None = None
+    last_heartbeat_at: datetime | None = None
     error_code: str | None = None
     message: str = ""
 
@@ -94,19 +85,15 @@ class DispatchResult:
 
 @dataclass(frozen=True, slots=True)
 class ClaimCommand:
-    """Worker claim of one queued ticket.
-
-    `agent_id` is forwarded only when the caller supplies it.
-    """
+    """Worker claim of one queued ticket."""
 
     actor_slot_id: str
     ticket_id: str
-    agent_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class ClaimResult:
-    """Claim recorded only after the coordinator accepts."""
+    """Claim recorded in Ling's own transaction."""
 
     ok: bool
     operation_id: str
@@ -191,20 +178,16 @@ class ConsumeResult:
 
 @dataclass(frozen=True, slots=True)
 class AcquireFileLockCommand:
-    """Claimant worker asks the coordinator for a file lock.
-
-    `agent_id` is the coordinator id when known, not the Ling slot id.
-    """
+    """Claimant worker records a local file lock for the paths it will write."""
 
     actor_slot_id: str
     ticket_id: str
     paths: tuple[str, ...]
-    agent_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class AcquireFileLockResult:
-    """Coordinator answer. Ling ticket state is unchanged either way."""
+    """Local file-lock record. The ticket state is unchanged either way."""
 
     ok: bool
     operation_id: str
@@ -213,5 +196,6 @@ class AcquireFileLockResult:
     state: str | None = None
     queue: int | None = None
     claimant: str | None = None
+    paths: tuple[str, ...] | None = None
     error_code: str | None = None
     message: str = ""

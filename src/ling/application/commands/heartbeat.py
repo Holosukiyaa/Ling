@@ -1,18 +1,10 @@
-"""Heartbeat an already registered slot. No background loop lives here."""
+"""Record a slot heartbeat on Ling's own slot record."""
 
 from __future__ import annotations
 
-from ling.application.commands.support import (
-    call_coordinator,
-    coordinator_code,
-    load_slot,
-    not_found,
-    parse_agent_id,
-    parse_slot_id,
-)
+from ling.application.commands.support import load_slot, not_found, parse_slot_id
 from ling.application.dto import INVALID_INPUT, HeartbeatCommand, HeartbeatResult
 from ling.application.ports.clock import Clock
-from ling.application.ports.coordinator import CoordinatorPort
 from ling.application.ports.id_generator import IdGenerator
 from ling.application.ports.unit_of_work import UnitOfWork
 
@@ -21,11 +13,10 @@ def execute(
     command: HeartbeatCommand,
     *,
     uow: UnitOfWork,
-    coordinator: CoordinatorPort,
     ids: IdGenerator,
     clock: Clock,
 ) -> HeartbeatResult:
-    """Call the coordinator only when the slot is already stored."""
+    """Mark a registered slot online and store the heartbeat time."""
 
     operation_id = ids.new_operation_id()
     occurred_at = clock.now()
@@ -39,18 +30,6 @@ def execute(
             error_code=INVALID_INPUT,
             message="slot id must be a non-empty string",
         )
-    try:
-        agent_id = parse_agent_id(command.agent_id)
-    except ValueError as exc:
-        uow.rollback()
-        return HeartbeatResult(
-            ok=False,
-            operation_id=operation_id,
-            occurred_at=occurred_at,
-            slot_id=slot_id.value,
-            error_code=INVALID_INPUT,
-            message=str(exc),
-        )
     slot = load_slot(uow, slot_id)
     if slot is None:
         uow.rollback()
@@ -63,29 +42,26 @@ def execute(
             error_code=code,
             message=message,
         )
-    external = call_coordinator(
-        lambda: coordinator.heartbeat(
-            slot_id=slot.slot_id.value,
-            agent_id=agent_id,
-            operation_id=operation_id,
-        )
-    )
-    if not external.ok:
+    try:
+        updated = slot.record_heartbeat(occurred_at)
+    except ValueError as exc:
         uow.rollback()
         return HeartbeatResult(
             ok=False,
             operation_id=operation_id,
             occurred_at=occurred_at,
             slot_id=slot.slot_id.value,
-            error_code=coordinator_code(external),
-            message=external.message,
+            error_code=INVALID_INPUT,
+            message=str(exc),
         )
-    # Domain Slot stores no heartbeat timestamp, so this commit writes no slot.
+    uow.slots.save(updated)
     uow.commit()
     return HeartbeatResult(
         ok=True,
         operation_id=operation_id,
         occurred_at=occurred_at,
-        slot_id=slot.slot_id.value,
-        message=external.message,
+        slot_id=updated.slot_id.value,
+        online=updated.online,
+        last_heartbeat_at=updated.last_heartbeat_at,
+        message="heartbeat",
     )

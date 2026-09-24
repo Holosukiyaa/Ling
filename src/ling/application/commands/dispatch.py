@@ -20,7 +20,6 @@ from ling.application.dto import (
     DispatchResult,
 )
 from ling.application.ports.clock import Clock
-from ling.application.ports.coordinator import CoordinatorPort
 from ling.application.ports.id_generator import IdGenerator
 from ling.application.ports.unit_of_work import UnitOfWork
 from ling.domain.agents.entities import template_catalog
@@ -34,17 +33,11 @@ def execute(
     command: DispatchCommand,
     *,
     uow: UnitOfWork,
-    coordinator: CoordinatorPort,
     ids: IdGenerator,
     clock: Clock,
 ) -> DispatchResult:
-    """Occupy the consumption lock and store a queued ticket in one commit.
+    """Occupy the consumption lock and store a queued ticket in one commit."""
 
-    `coordinator` is accepted so every command shares the same dependencies.
-    Dispatch does not call it.
-    """
-
-    del coordinator
     operation_id = ids.new_operation_id()
     occurred_at = clock.now()
     issuer_id = parse_slot_id(command.issuer_slot_id)

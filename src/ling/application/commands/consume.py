@@ -14,7 +14,6 @@ from ling.application.commands.support import (
 )
 from ling.application.dto import NOT_ISSUER, INVALID_INPUT, ConsumeCommand, ConsumeResult
 from ling.application.ports.clock import Clock
-from ling.application.ports.coordinator import CoordinatorPort
 from ling.application.ports.id_generator import IdGenerator
 from ling.application.ports.unit_of_work import UnitOfWork
 from ling.domain.errors import DomainError
@@ -25,13 +24,11 @@ def execute(
     command: ConsumeCommand,
     *,
     uow: UnitOfWork,
-    coordinator: CoordinatorPort,
     ids: IdGenerator,
     clock: Clock,
 ) -> ConsumeResult:
-    """Let the issuing mentor consume. Ticket and lock commit in one unit of work."""
+    """Consume the ticket, release the consumption lock, and drop its file locks."""
 
-    del coordinator
     operation_id = ids.new_operation_id()
     occurred_at = clock.now()
     actor_id = parse_slot_id(command.actor_slot_id)
@@ -94,6 +91,7 @@ def execute(
         )
     uow.tickets.save(ticket)
     uow.consumption_locks.save(lock)
+    uow.file_locks.release(ticket.ticket_id)
     uow.commit()
     return _snapshot(
         operation_id,

@@ -12,7 +12,9 @@ import sqlite3
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS slots (
     slot_id TEXT PRIMARY KEY,
-    template_id TEXT NOT NULL
+    template_id TEXT NOT NULL,
+    online INTEGER NOT NULL,
+    last_heartbeat_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS tickets (
@@ -38,6 +40,16 @@ CREATE TABLE IF NOT EXISTS tickets (
 CREATE TABLE IF NOT EXISTS consumption_locks (
     mentor_slot_id TEXT PRIMARY KEY REFERENCES slots(slot_id),
     ticket_id TEXT UNIQUE REFERENCES tickets(ticket_id)
+);
+
+CREATE TABLE IF NOT EXISTS file_locks (
+    ticket_id TEXT PRIMARY KEY REFERENCES tickets(ticket_id),
+    holder_slot_id TEXT NOT NULL REFERENCES slots(slot_id)
+);
+
+CREATE TABLE IF NOT EXISTS file_lock_paths (
+    path TEXT PRIMARY KEY,
+    ticket_id TEXT NOT NULL REFERENCES file_locks(ticket_id)
 );
 """
 
