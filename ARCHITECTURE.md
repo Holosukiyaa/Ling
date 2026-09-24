@@ -40,7 +40,7 @@ infrastructure -> domain
 bootstrap -> interfaces, application, infrastructure
 ```
 
-`domain` 不得导入 `application`、`infrastructure` 或 `interfaces`。`application` 不得导入 HTTP 客户端、SQLite、MCP SDK 或 ag。只有 `bootstrap` 可以把具体实现组装起来。未来增加 FastAPI 时，它和 MCP 共享 application 用例，不复制业务规则。
+`domain` 不得导入 `application`、`infrastructure` 或 `interfaces`。`application` 只依赖 `domain` 和 `application.ports`，不得导入 infrastructure、interfaces、SQLite、HTTP 客户端、MCP SDK 或 ag。只有 `bootstrap` 可以把具体实现组装起来。未来增加 FastAPI 时，它和 MCP 共享 application 用例，不复制业务规则。
 
 不要建立一个所有层都依赖的 `utils` 或 `models` 大包。跨层对象要么是 domain value object，要么是 application DTO，要么是某个端口的协议。
 
@@ -209,13 +209,13 @@ application use case
 
 Ling 是槽位、票据、队列、文件锁和权限的唯一事实来源。claim、放弃领取、file lock、票据状态机和 Agent 启动都不经过 Agent Coordinator。Agent Coordinator 只接收成功调用之后的观测投影，不能影响 Ling 的本地结果。
 
-这层观测是可选的。`LING_COORDINATOR_URL` 未设置或为空时使用 `NullRuntimeObserver`，进程不产生任何外部请求。设置之后，infrastructure 里的 HTTP 适配器用标准库在有限超时内投递注册、心跳和活动。超时、连接失败、非 2xx 和无法解析的响应只记 stderr。`LING_COORDINATOR_TIMEOUT` 非法时使用 0.5 秒。`LING_COORDINATOR_WORKSPACE` 未设置时使用进程当前工作目录。
+这层观测是可选的，只存在于 `infrastructure.coordinator`，是运行时适配器。`application` 不调用它。`LING_COORDINATOR_URL` 未设置或为空时使用 `NullRuntimeObserver`，进程不产生任何外部请求。设置之后，该适配器用标准库在有限超时内投递注册、心跳和活动。超时、连接失败、非 2xx 和无法解析的响应只记 stderr。`LING_COORDINATOR_TIMEOUT` 非法时使用 0.5 秒。`LING_COORDINATOR_WORKSPACE` 未设置时使用进程当前工作目录。
 
 投影 agent id 是 `ling-` 加上 slot id 的 SHA-256 十六进制摘要前 24 位。它不是 Ling domain 的 external agent id，不写入 domain、SQLite 或 DTO。`application` 的 `RuntimeObserver` 只接受 tool name、arguments 和 result 这三组普通数据，用例和 domain 不依赖 HTTP。
 
-观测不调用任务领取、任务状态、文件锁或 Agent 启停接口。GUI 地址是 `http://localhost:9889/dashboard`。
+观测不调用任务领取、任务状态、文件锁或 Agent 启停接口。`http://localhost:9889/dashboard` 是可选观测服务自己的页面，不是 Ling 的依赖，Ling 也不连接它。
 
-Ling 不 import `ag`。`ag` 不是运行时服务。worker 如果要在自己的代码票里使用 ag，那是 worker 环境里的事，不是 Ling 用例的一步。
+Ling 不 import `ag`。`ag` 不是运行时服务，也不是必需依赖。worker 如果要在自己的代码票里使用 ag，那是 worker 环境里的事，不是 Ling 用例的一步。
 
 ## 8. 实施顺序
 
