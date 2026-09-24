@@ -101,6 +101,9 @@ def violation(current: str, imported: str) -> str | None:
     if is_forbidden_sdk(imported) and layer != "infrastructure":
         return f"{current} imports forbidden SDK {imported}"
 
+    if layer == "application" and _root(imported) == "transitions":
+        return f"application imports {imported}"
+
     if not imported.startswith("ling"):
         return None
 
@@ -111,6 +114,8 @@ def violation(current: str, imported: str) -> str | None:
         for banned in ("ling.infrastructure", "ling.interfaces", "ling.bootstrap"):
             if _under(imported, banned):
                 return f"application imports {imported}"
+        if _root(imported) == "transitions" or _under(imported, "ling.domain.tickets.transitions"):
+            return f"application imports {imported}"
     elif layer == "interfaces":
         allowed = ("ling.interfaces", "ling.application", "ling.domain")
         if not any(_under(imported, prefix) for prefix in allowed):

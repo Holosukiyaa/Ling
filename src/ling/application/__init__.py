@@ -1,1 +1,1 @@
-"""Application layer. Use cases and ports. Unimplemented."""
+"""Application layer. Synchronous use cases and ports over the domain."""

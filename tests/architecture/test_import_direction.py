@@ -35,6 +35,12 @@ def test_application_cannot_import_adapters_or_sdks() -> None:
     assert len(found) == 4
 
 
+def test_application_cannot_import_transitions() -> None:
+    source = "import transitions\nfrom ling.domain.tickets.transitions import TicketMachine\n"
+    found = check_source("ling.application.commands.dispatch", source)
+    assert len(found) == 2
+
+
 def test_interfaces_cannot_import_infrastructure() -> None:
     source = "from ling.infrastructure.persistence import sqlite\n"
     found = check_source("ling.interfaces.mcp", source)
