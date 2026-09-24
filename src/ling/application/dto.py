@@ -107,6 +107,29 @@ class ClaimResult:
 
 
 @dataclass(frozen=True, slots=True)
+class AbandonClaimCommand:
+    """Worker releases a claim it currently holds."""
+
+    actor_slot_id: str
+    ticket_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class AbandonClaimResult:
+    """Ticket returned to queue 1, or the previous state when the call is refused."""
+
+    ok: bool
+    operation_id: str
+    occurred_at: datetime
+    ticket_id: str | None = None
+    state: str | None = None
+    queue: int | None = None
+    claimant: str | None = None
+    error_code: str | None = None
+    message: str = ""
+
+
+@dataclass(frozen=True, slots=True)
 class SubmitCommand:
     """Claimant worker submits the ticket for review."""
 

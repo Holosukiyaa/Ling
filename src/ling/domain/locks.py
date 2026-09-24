@@ -60,8 +60,10 @@ class ConsumptionLock:
 class FileLock:
     """Paths one claimed slot may write for one ticket.
 
-    The record stays until that ticket is consumed. No command releases it
-    while the ticket is still claimed. It does not lock the operating system.
+    The record stays until that ticket is consumed, or until the claimant
+    abandons the claim. Abandon deletes the record in the same commit that
+    returns the ticket to queued. Nothing releases it while the ticket stays
+    claimed. It does not lock the operating system.
     """
 
     def __init__(self, ticket_id: TicketId, holder: SlotId, paths: frozenset[str]) -> None:

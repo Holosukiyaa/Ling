@@ -11,7 +11,7 @@ from ling.domain.errors import InvalidTransition, UnknownEvent
 from ling.domain.tickets.states import TicketState
 
 KNOWN_EVENTS: frozenset[str] = frozenset(
-    {"claim", "submit", "accept", "reject", "consume"}
+    {"claim", "submit", "accept", "reject", "consume", "abandon"}
 )
 
 _SOURCES: dict[str, TicketState | tuple[TicketState, ...]] = {
@@ -20,6 +20,7 @@ _SOURCES: dict[str, TicketState | tuple[TicketState, ...]] = {
     "accept": TicketState.SUBMITTED,
     "reject": TicketState.SUBMITTED,
     "consume": (TicketState.ACCEPTED, TicketState.REJECTED),
+    "abandon": TicketState.CLAIMED,
 }
 
 
@@ -43,6 +44,7 @@ def _transition_table() -> list[dict[str, object]]:
                 "submit": TicketState.SUBMITTED.value,
                 "accept": TicketState.ACCEPTED.value,
                 "reject": TicketState.REJECTED.value,
+                "abandon": TicketState.QUEUED.value,
             }[event]
         table.append({"trigger": event, "source": source_value, "dest": dest})
     return table

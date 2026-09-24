@@ -31,6 +31,11 @@ class ClaimInput(_Input):
     ticket_id: str = Field(min_length=1)
 
 
+class AbandonClaimInput(_Input):
+    actor_slot_id: str = Field(min_length=1)
+    ticket_id: str = Field(min_length=1)
+
+
 class SubmitInput(_Input):
     actor_slot_id: str = Field(min_length=1)
     ticket_id: str = Field(min_length=1)

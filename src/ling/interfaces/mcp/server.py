@@ -16,6 +16,7 @@ from pydantic import BaseModel
 from ling.interfaces.mcp.adapter import ToolDeps
 from ling.interfaces.mcp.schemas import (
     TOOL_OUTPUT_SCHEMA,
+    AbandonClaimInput,
     AcquireFileLockInput,
     ClaimInput,
     ConsumeInput,
@@ -26,6 +27,7 @@ from ling.interfaces.mcp.schemas import (
     ReviewInput,
     SubmitInput,
 )
+from ling.interfaces.mcp.tools.abandon_claim import handle as abandon_claim
 from ling.interfaces.mcp.tools.acquire_file_lock import handle as acquire_file_lock
 from ling.interfaces.mcp.tools.claim import handle as claim
 from ling.interfaces.mcp.tools.consume import handle as consume
@@ -73,6 +75,12 @@ _TOOLS: tuple[_Tool, ...] = (
         claim,
     ),
     _Tool(
+        "ling_abandon_claim",
+        "Abandon a claimed ticket, return it to queue 1, and release its file lock.",
+        AbandonClaimInput,
+        abandon_claim,
+    ),
+    _Tool(
         "ling_submit",
         "Submit one claimed local ticket for review.",
         SubmitInput,
@@ -106,7 +114,7 @@ _TOOLS: tuple[_Tool, ...] = (
 
 
 def build_server(deps: ToolDeps) -> Server:
-    """Register the nine local tools on an official MCP server."""
+    """Register the ten local tools on an official MCP server."""
 
     server: Server = Server(
         "ling",

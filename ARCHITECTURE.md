@@ -75,6 +75,7 @@ ling/
 │     │  │  ├─ heartbeat.py
 │     │  │  ├─ dispatch.py
 │     │  │  ├─ claim.py
+│     │  │  ├─ abandon_claim.py
 │     │  │  ├─ submit.py
 │     │  │  ├─ review.py
 │     │  │  ├─ consume.py
@@ -121,13 +122,14 @@ ling/
 - `Slot`：模板的一次实例化，拥有稳定的 slot id、在线状态和最近心跳时间。slot id 不是外部系统的 agent id。
 - `Ticket`：全程不变的 ticket id、发起槽位、目标类型、任务内容、当前状态、当前队列、领取者和结果。
 - `ConsumptionLock`：防止同一个 mentor 在前一张结果未消费前重复派发；它是 Ling 自己的记录。
-- `FileLock`：Ling 自己记录的路径占用，包含 ticket、持有槽位和路径集合。它不是操作系统文件锁。消费该票时释放。票仍处于 claimed 时，当前命令不能单独释放它。
+- `FileLock`：Ling 自己记录的路径占用，包含 ticket、持有槽位和路径集合。它不是操作系统文件锁。消费该票时释放。worker 放弃领取时，同一事务把票退回 queued，并删除该票的文件锁及其全部路径。消费锁不随放弃释放。票仍处于 claimed 时，没有单独的释放命令。
 
 票据状态和队列的映射固定为：
 
 ```text
 创建/派发       queued       队列 1（任务）
 worker 领取     claimed      队列 1
+worker 放弃领取 queued       队列 1（任务），领取者清空
 worker 提交     submitted    队列 3（待审核）
 checker 接受    accepted     队列 2（结果）
 checker 拒绝    rejected     队列 2（结果）
@@ -148,6 +150,7 @@ mentor 消费     consumed     不再可消费
 | `heartbeat` | 已注册槽位 | 把槽位标为在线，并写入最近心跳时间 |
 | `dispatch` | mentor | 校验等级和消费锁，创建队列 1 票 |
 | `claim` | worker | 校验槽位、queued 状态和领取冲突，在本地事务中记录领取者 |
+| `abandon_claim` | worker | 只有当前领取者能把 claimed 票退回队列 1，清空领取者，并删除该票的文件锁；原 mentor 的消费锁仍绑定这张票 |
 | `submit` | worker | 校验领取者，把票从队列 1 推到队列 3 |
 | `review` | checker | 从队列 3 取票，产生 accepted/rejected 结论并放入队列 2 |
 | `consume` | 原 mentor | 只能消费自己发出的 ticket id；消费后释放消费锁和该票的文件锁 |
@@ -175,6 +178,7 @@ ling_register_slot
 ling_heartbeat
 ling_dispatch
 ling_claim
+ling_abandon_claim
 ling_submit
 ling_review
 ling_consume
@@ -215,7 +219,7 @@ Ling 不 import `ag`。`ag` 不是运行时服务。worker 如果要在自己的
 4. 接入 MCP stdio 工具，让调用方自己的 Agent loop 可以驱动完整票据流。
 5. 增加只读 dashboard 查询。
 
-第 4 步和第 5 步已经接上。`python -m ling` 提供这九个工具，数据库路径来自 `--database` 或 `LING_DATABASE`。dashboard 走只读查询。
+第 4 步和第 5 步已经接上。`python -m ling` 提供这十个工具，数据库路径来自 `--database` 或 `LING_DATABASE`。dashboard 走只读查询。
 
 第一版不实现 FastAPI 页面、模型启动器、具体 Agent 适配器，也不把外部 Coordinator 当成运行时依赖。
 

@@ -26,7 +26,7 @@ class AlreadyClaimed(DomainError):
 
 
 class NotClaimant(DomainError):
-    """Submit was attempted by a slot that does not hold the claim."""
+    """A slot that does not hold the claim tried to act as the claimant."""
 
     code = "not_claimant"
 

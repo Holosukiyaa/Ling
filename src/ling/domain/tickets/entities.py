@@ -90,10 +90,20 @@ class Ticket:
             raise InvalidTransition(f"cannot consume from {self.state.value}")
         self._machine.fire("consume")
 
+    def abandon(self, actor: SlotId) -> None:
+        """claimed -> queued, only by the recorded claimant. The claimant is cleared."""
+
+        if self.state is not TicketState.CLAIMED:
+            raise InvalidTransition(f"cannot abandon from {self.state.value}")
+        if actor != self.claimant:
+            raise NotClaimant(f"{actor.value} is not the claimant of {self.ticket_id.value}")
+        self._machine.fire("abandon")
+        self.claimant = None
+
     def fire(self, event: str) -> None:
         """Run a named event. Unknown names fail and leave the ticket untouched.
 
-        Prefer claim/submit/accept/reject/consume. This entry exists so an
+        Prefer claim/submit/accept/reject/consume/abandon. This entry exists so an
         unrecognized trigger is rejected without using a transitions exception.
         """
 
@@ -109,6 +119,8 @@ class Ticket:
                 self.reject()
             elif event == "consume":
                 raise InvalidTransition("consume requires the issuer slot")
+            elif event == "abandon":
+                raise InvalidTransition("abandon requires the claimant slot")
             else:
                 self._machine.fire(event)
         except Exception:
