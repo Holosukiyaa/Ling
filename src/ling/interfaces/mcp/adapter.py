@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
@@ -12,6 +12,7 @@ from pydantic import BaseModel
 
 from ling.application.ports.clock import Clock
 from ling.application.ports.id_generator import IdGenerator
+from ling.application.ports.observer import NullRuntimeObserver, RuntimeObserver
 from ling.application.ports.unit_of_work import UnitOfWork
 from ling.interfaces.mcp.schemas import parse_input
 
@@ -25,6 +26,7 @@ class ToolDeps:
     open_unit_of_work: Callable[[], UnitOfWork]
     ids: IdGenerator
     clock: Clock
+    observer: RuntimeObserver = field(default_factory=NullRuntimeObserver)
 
 
 def rejected(deps: ToolDeps, message: str, *, ticket_id: str | None = None) -> dict[str, Any]:

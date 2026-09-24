@@ -165,6 +165,8 @@ def build_server(deps: ToolDeps) -> Server:
                     "error_code": "internal",
                     "message": "request failed",
                 }
+            else:
+                _observe(deps, name, arguments or {}, payload)
         return types.CallToolResult(
             content=[types.TextContent(type="text", text=json.dumps(payload))],
             structuredContent=payload,
@@ -172,6 +174,17 @@ def build_server(deps: ToolDeps) -> Server:
         )
 
     return server
+
+
+def _observe(deps: ToolDeps, name: str, arguments: dict[str, Any], payload: dict[str, Any]) -> None:
+    """Hand a successful local result to the observer. Observation cannot change it."""
+
+    if not payload.get("ok"):
+        return
+    try:
+        deps.observer.observe(name, arguments, payload)
+    except Exception:
+        logger.exception("coordinator observation failed")
 
 
 async def run_stdio(server: Server) -> None:

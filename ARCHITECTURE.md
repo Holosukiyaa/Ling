@@ -86,7 +86,8 @@ ling/
 │     │  │  ├─ repositories.py
 │     │  │  ├─ unit_of_work.py
 │     │  │  ├─ clock.py
-│     │  │  └─ id_generator.py
+│     │  │  ├─ id_generator.py
+│     │  │  └─ observer.py         # 只接收 tool name、arguments、result
 │     │  └─ dto.py                  # MCP/HTTP 共用的应用输入输出
 │     ├─ infrastructure/
 │     │  ├─ persistence/sqlite/
@@ -94,7 +95,8 @@ ling/
 │     │  │  ├─ schema.py
 │     │  │  ├─ repositories.py
 │     │  │  └─ unit_of_work.py
-│     │  ├─ coordinator/           # 空目录；当前不定义出站协议
+│     │  ├─ coordinator/           # 可选观测投影；不参与本地治理
+│     │  │  └─ http_observer.py
 │     │  └─ ag/                    # 空目录；ag 不是运行时依赖
 │     └─ interfaces/
 │        ├─ mcp/
@@ -169,7 +171,7 @@ SQLite 用 WAL。读到第一次 `get` 时开启 `BEGIN IMMEDIATE`，把同一�
 
 ## 6. MCP 边界
 
-MCP 只是入站适配器。每个工具只做参数解析、身份提取、调用 application 用例和错误映射，不包含权限判断、SQL 或 HTTP 调用。
+MCP 只是入站适配器。每个工具只做参数解析、身份提取、调用 application 用例和错误映射，不包含权限判断、SQL 或 HTTP 调用。本地结果确定之后，server 才把 `ok=true` 的调用交给可选的 `RuntimeObserver`。观测失败只留在 stderr，不能改写本地结果，也不能把成功变成 `internal`。
 
 第一批工具可以稳定为：
 
@@ -205,9 +207,13 @@ application use case
 
 ## 7. 外部系统边界
 
-本地治理不依赖 Agent Coordinator、HTTP 服务或某个 Agent CLI。`application` 不定义出站协调协议，也不发明一套 HTTP/JSON 接口。
+Ling 是槽位、票据、队列、文件锁和权限的唯一事实来源。claim、放弃领取、file lock、票据状态机和 Agent 启动都不经过 Agent Coordinator。Agent Coordinator 只接收成功调用之后的观测投影，不能影响 Ling 的本地结果。
 
-如果将来确有一个外部系统要参与，只能作为可选适配器加在 infrastructure，不能变成用例的必需参数。那个适配器出现之前，不预写它的协议。
+这层观测是可选的。`LING_COORDINATOR_URL` 未设置或为空时使用 `NullRuntimeObserver`，进程不产生任何外部请求。设置之后，infrastructure 里的 HTTP 适配器用标准库在有限超时内投递注册、心跳和活动。超时、连接失败、非 2xx 和无法解析的响应只记 stderr。`LING_COORDINATOR_TIMEOUT` 非法时使用 0.5 秒。`LING_COORDINATOR_WORKSPACE` 未设置时使用进程当前工作目录。
+
+投影 agent id 是 `ling-` 加上 slot id 的 SHA-256 十六进制摘要前 24 位。它不是 Ling domain 的 external agent id，不写入 domain、SQLite 或 DTO。`application` 的 `RuntimeObserver` 只接受 tool name、arguments 和 result 这三组普通数据，用例和 domain 不依赖 HTTP。
+
+观测不调用任务领取、任务状态、文件锁或 Agent 启停接口。GUI 地址是 `http://localhost:9889/dashboard`。
 
 Ling 不 import `ag`。`ag` 不是运行时服务。worker 如果要在自己的代码票里使用 ag，那是 worker 环境里的事，不是 Ling 用例的一步。
 
@@ -221,5 +227,5 @@ Ling 不 import `ag`。`ag` 不是运行时服务。worker 如果要在自己的
 
 第 4 步和第 5 步已经接上。`python -m ling` 提供这十个工具，数据库路径来自 `--database` 或 `LING_DATABASE`。dashboard 走只读查询。
 
-第一版不实现 FastAPI 页面、模型启动器、具体 Agent 适配器，也不把外部 Coordinator 当成运行时依赖。
+第一版不实现 FastAPI 页面、模型启动器或具体 Agent 适配器。可选的 Agent Coordinator 观测不是运行时依赖；未配置 URL 时它不存在。
 
