@@ -22,6 +22,9 @@ class SlotRepository(Protocol):
     def save(self, slot: Slot) -> None:
         """Stage `slot` until the unit of work commits."""
 
+    def list(self) -> tuple[Slot, ...]:
+        """Return every slot visible in this unit of work, ordered by slot id."""
+
 
 class TicketRepository(Protocol):
     """Load and stage tickets inside one unit of work."""
@@ -35,6 +38,9 @@ class TicketRepository(Protocol):
     def save(self, ticket: Ticket) -> None:
         """Stage `ticket` until the unit of work commits."""
 
+    def list(self) -> tuple[Ticket, ...]:
+        """Return every ticket visible in this unit of work, ordered by ticket id."""
+
 
 class ConsumptionLockRepository(Protocol):
     """Load and stage one consumption lock per mentor slot."""
@@ -47,6 +53,9 @@ class ConsumptionLockRepository(Protocol):
 
     def save(self, lock: ConsumptionLock) -> None:
         """Stage `lock` until the unit of work commits."""
+
+    def list(self) -> tuple[ConsumptionLock, ...]:
+        """Return every consumption lock visible in this unit of work."""
 
 
 class FileLockRepository(Protocol):

@@ -40,6 +40,20 @@ class SqliteSlotRepository:
     def find(self, slot_id: SlotId) -> Slot | None:
         return self.get(slot_id)
 
+    def list(self) -> tuple[Slot, ...]:
+        self._uow.begin_for_read()
+        rows = self._uow._connection().execute(
+            """
+            SELECT slot_id, template_id, online, last_heartbeat_at
+            FROM slots ORDER BY slot_id
+            """
+        ).fetchall()
+        found = {str(row["slot_id"]): slot_from_row(row) for row in rows}
+        for key, item in _staged(self._uow, "slot"):
+            if isinstance(item, Slot):
+                found[key] = item
+        return tuple(found[key] for key in sorted(found))
+
     def save(self, slot: Slot) -> None:
         self._uow.stage("slot", slot.slot_id.value, slot)
 
@@ -70,6 +84,20 @@ class SqliteTicketRepository:
     def find(self, ticket_id: TicketId) -> Ticket | None:
         return self.get(ticket_id)
 
+    def list(self) -> tuple[Ticket, ...]:
+        self._uow.begin_for_read()
+        rows = self._uow._connection().execute(
+            """
+            SELECT ticket_id, issuer_slot_id, content, state, claimant_slot_id, review_result
+            FROM tickets ORDER BY ticket_id
+            """
+        ).fetchall()
+        found = {str(row["ticket_id"]): ticket_from_row(row) for row in rows}
+        for key, item in _staged(self._uow, "ticket"):
+            if isinstance(item, Ticket):
+                found[key] = item
+        return tuple(found[key] for key in sorted(found))
+
     def save(self, ticket: Ticket) -> None:
         self._uow.stage("ticket", ticket.ticket_id.value, ticket)
 
@@ -96,6 +124,17 @@ class SqliteConsumptionLockRepository:
 
     def find(self, mentor: SlotId) -> ConsumptionLock | None:
         return self.get(mentor)
+
+    def list(self) -> tuple[ConsumptionLock, ...]:
+        self._uow.begin_for_read()
+        rows = self._uow._connection().execute(
+            "SELECT mentor_slot_id, ticket_id FROM consumption_locks ORDER BY mentor_slot_id"
+        ).fetchall()
+        found = {str(row["mentor_slot_id"]): lock_from_row(row) for row in rows}
+        for key, item in _staged(self._uow, "lock"):
+            if isinstance(item, ConsumptionLock):
+                found[key] = item
+        return tuple(found[key] for key in sorted(found))
 
     def save(self, lock: ConsumptionLock) -> None:
         self._uow.stage("lock", lock.mentor.value, lock)
@@ -147,6 +186,10 @@ class SqliteFileLockRepository:
 
     def release(self, ticket_id: TicketId) -> None:
         self._uow.release_file_lock(ticket_id.value)
+
+
+def _staged(unit_of_work: SqliteUnitOfWork, kind: str) -> list[tuple[str, object]]:
+    return [(key, item) for staged_kind, key, item in unit_of_work._staged if staged_kind == kind]
 
 
 def insert_aggregate(connection: sqlite3.Connection, kind: str, item: object) -> None:

@@ -6,7 +6,7 @@ Ling 是多 AI 协作的任务、权限和状态控制内核。它不负责启�
 
 Ling 由调用方驱动。用户自己启动 Agent。Agent 主动连接 Ling。Ling 不启动 Agent，不选择模型，也不适配某一种 Agent 产品。没有外部 Agent Coordinator 时，注册、心跳、派发、领取、提交、审核、消费和文件锁都在 Ling 本地完成。
 
-一个 AI 运行时通过 MCP 连接 Ling，获得一个由模板声明出来的槽位。自带 loop 的运行时可以长期运行自己的循环，按需调用 Ling 的 MCP 工具。Ling 只决定“谁可以在什么时候对哪张票做哪一步”，不决定模型如何思考。MCP 服务本身还没有实现。
+操作者启动 `python -m ling`，得到一个 MCP stdio 服务。Agent 自己连接它，获得一个由模板声明出来的槽位。自带 loop 的运行时可以长期运行自己的循环，按需调用 Ling 的 MCP 工具。Ling 只决定“谁可以在什么时候对哪张票做哪一步”，不决定模型如何思考，也不启动那个运行时。
 
 Ling 是独立项目。`ag` 是 Ling 的开发交付治理工具，不是 Ling 运行时必须调用的服务。Ling 不修改 `C:\WorkSpace\Code\ag` 的目录、包名和命令。代码票进入 worker 后，worker 仍可在自己的环境里使用 ag 完成工作树、验收、switch 和最终收口。
 
@@ -55,9 +55,8 @@ ling/
 │  └─ ling/
 │     ├─ __main__.py
 │     ├─ bootstrap/
-│     │  ├─ settings.py          # 环境变量和配置文件
-│     │  ├─ container.py          # 唯一的依赖组装处
-│     │  └─ mcp_app.py            # 构造 MCP server
+│     │  ├─ container.py          # 组装 SQLite、时钟，并启动 MCP stdio
+│     │  └─ runtime.py            # 时钟，以及票据和操作 id
 │     ├─ domain/
 │     │  ├─ agents/
 │     │  │  ├─ entities.py        # Template、Slot
@@ -95,12 +94,12 @@ ling/
 │     │  │  ├─ repositories.py
 │     │  │  └─ unit_of_work.py
 │     │  ├─ coordinator/           # 空目录；当前不定义出站协议
-│     │  ├─ ag/                    # 空目录；ag 不是运行时依赖
-│     │  └─ system_clock.py
+│     │  └─ ag/                    # 空目录；ag 不是运行时依赖
 │     └─ interfaces/
 │        ├─ mcp/
 │        │  ├─ server.py
 │        │  ├─ schemas.py
+│        │  ├─ adapter.py
 │        │  └─ tools/
 │        ├─ cli/                    # 后续的人工运维入口
 │        └─ http/                   # 后续 FastAPI 入口，第一版不实现
@@ -153,13 +152,15 @@ mentor 消费     consumed     不再可消费
 | `review` | checker | 从队列 3 取票，产生 accepted/rejected 结论并放入队列 2 |
 | `consume` | 原 mentor | 只能消费自己发出的 ticket id；消费后释放消费锁和该票的文件锁 |
 | `acquire_file_lock` | 已领取票的 worker | 在 Ling 本地记录 ticket、持有槽位和路径；冲突路径不能被另一张票占用 |
-| `dashboard` | 操作员/只读客户端 | 尚未实现 |
+| `dashboard` | 只读客户端 | 返回 Ling 自己的槽位、票据、队列、锁和心跳，不改状态 |
 
 每个命令遵循同一顺序：
 
 1. 在 Ling 的事务中读取槽位、票据和锁，完成权限检查。
 2. 调用领域规则或状态机验证目标变化。
 3. 检查通过后提交 Ling 状态；失败则保持原状态和原队列。
+
+`dashboard` 只读取这些记录，不提交。
 
 SQLite 用 WAL。读到第一次 `get` 时开启 `BEGIN IMMEDIATE`，把同一次用例里的读取和写入放进同一个写事务，避免两个领取同时成功。领取、消费和派发仍靠领域检查；槽位、票据和路径另有唯一约束，重复插入不会静默覆盖。
 
@@ -181,13 +182,13 @@ ling_acquire_file_lock
 ling_dashboard
 ```
 
-工具返回统一的结构化结果：`ok`、`operation_id`、`ticket_id`、`state`、`queue`、`error_code` 和可读消息。错误码区分 `forbidden`、`invalid_transition`、`already_claimed`、`not_found`、`conflict`，这样调用方的 loop 可以决定等待、重试还是结束本轮。
+工具返回统一的结构化结果：`ok`、`operation_id`、`ticket_id`、`state`、`queue`、`error_code` 和可读消息。缺字段、类型错误和空字符串是 `invalid_input`。权限和状态机错误沿用用例的错误码，例如 `forbidden`、`invalid_transition`、`already_claimed`、`not_found`、`conflict`。未预期的失败是 `internal`，客户端只看到这句说明，堆栈留在 stderr。
 
 调用方的 loop 位于 Ling 进程之外：
 
 ```text
 调用方自己的 Agent loop
-        │ MCP stdio（尚未实现）
+        │ MCP stdio
         ▼
 interfaces.mcp
         ▼
@@ -213,6 +214,8 @@ Ling 不 import `ag`。`ag` 不是运行时服务。worker 如果要在自己的
 3. 完成 SQLite repository 和短事务。注册、心跳、领取和文件锁都写入 Ling 自己的表。
 4. 接入 MCP stdio 工具，让调用方自己的 Agent loop 可以驱动完整票据流。
 5. 增加只读 dashboard 查询。
+
+第 4 步和第 5 步已经接上。`python -m ling` 提供这九个工具，数据库路径来自 `--database` 或 `LING_DATABASE`。dashboard 走只读查询。
 
 第一版不实现 FastAPI 页面、模型启动器、具体 Agent 适配器，也不把外部 Coordinator 当成运行时依赖。
 

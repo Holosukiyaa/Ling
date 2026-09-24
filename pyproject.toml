@@ -4,7 +4,7 @@ version = "0.0.0"
 description = "Task, permission, and state kernel for multi-AI collaboration."
 requires-python = ">=3.11"
 readme = "README.md"
-dependencies = ["transitions>=0.9.2"]
+dependencies = ["mcp>=1.28.1", "transitions>=0.9.2"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]

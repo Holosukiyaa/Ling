@@ -1,1 +1,1 @@
-"""MCP adapter package. No server in this skeleton."""
+"""Generic MCP stdio adapter. Agents connect here; this package does not start them."""

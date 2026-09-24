@@ -199,3 +199,62 @@ class AcquireFileLockResult:
     paths: tuple[str, ...] | None = None
     error_code: str | None = None
     message: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class DashboardSlot:
+    """One slot as shown by the read-only dashboard."""
+
+    slot_id: str
+    template_id: str
+    online: bool
+    last_heartbeat_at: datetime | None
+
+
+@dataclass(frozen=True, slots=True)
+class DashboardTicket:
+    """One ticket as shown by the read-only dashboard."""
+
+    ticket_id: str
+    issuer_slot_id: str
+    content: str
+    state: str
+    queue: int | None
+    claimant: str | None
+    review_result: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class DashboardConsumptionLock:
+    """One mentor consumption lock as shown by the dashboard."""
+
+    mentor_slot_id: str
+    ticket_id: str | None
+    held: bool
+
+
+@dataclass(frozen=True, slots=True)
+class DashboardFileLock:
+    """One local file lock as shown by the dashboard."""
+
+    ticket_id: str
+    holder_slot_id: str
+    paths: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class DashboardResult:
+    """Read-only snapshot of Ling's own records."""
+
+    ok: bool
+    operation_id: str
+    occurred_at: datetime
+    ticket_id: str | None = None
+    state: str | None = None
+    queue: int | None = None
+    error_code: str | None = None
+    message: str = ""
+    slots: tuple[DashboardSlot, ...] = ()
+    tickets: tuple[DashboardTicket, ...] = ()
+    consumption_locks: tuple[DashboardConsumptionLock, ...] = ()
+    file_locks: tuple[DashboardFileLock, ...] = ()
