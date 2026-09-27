@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Protocol
 
 from ling.application.dto import ATTACHMENT_REJECTED
+from ling.application.ports.attachments import AttachmentSessionLookup
 from ling.application.ports.clock import Clock
-from ling.application.ports.unit_of_work import UnitOfWork
+from ling.application.ports.repositories import SlotRepository
 from ling.domain.agents.values import SlotId
 
 
@@ -19,7 +21,14 @@ class ResolvedAttachment:
     template_id: str | None = None
 
 
-def execute(session_id: str, *, uow: UnitOfWork, clock: Clock) -> ResolvedAttachment:
+class AttachmentResolutionView(Protocol):
+    """Session and slot reads. Callers choose a write or deferred read unit."""
+
+    slots: SlotRepository
+    attachment_sessions: AttachmentSessionLookup
+
+
+def execute(session_id: str, *, uow: AttachmentResolutionView, clock: Clock) -> ResolvedAttachment:
     """Return the session slot when it is still active. This query does not write."""
 
     if not isinstance(session_id, str) or not session_id.strip():

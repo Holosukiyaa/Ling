@@ -11,19 +11,19 @@ from ling.application.dto import (
 )
 from ling.application.ports.clock import Clock
 from ling.application.ports.id_generator import IdGenerator
-from ling.application.ports.unit_of_work import UnitOfWork
+from ling.application.ports.unit_of_work import ReadOnlyUnitOfWork
 from ling.domain.agents.entities import WORKER_ID
 from ling.domain.agents.values import SlotId
 
 
 def execute(
     *,
-    uow: UnitOfWork,
+    uow: ReadOnlyUnitOfWork,
     ids: IdGenerator,
     clock: Clock,
     viewer_slot_id: str | None = None,
 ) -> DashboardResult:
-    """Collect the current local records. This query does not change them.
+    """Collect one committed snapshot. This query does not change rows or receipts.
 
     A worker viewer receives only its own slot and tickets targeted at that
     slot. Mentor and checker viewers, and an omitted viewer, receive the full
@@ -94,7 +94,7 @@ def execute(
     )
 
 
-def _is_worker_view(uow: UnitOfWork, viewer_slot_id: str | None) -> bool:
+def _is_worker_view(uow: ReadOnlyUnitOfWork, viewer_slot_id: str | None) -> bool:
     """True when the session slot is a worker, or the viewer id is unusable.
 
     An unknown viewer fails closed to the empty worker projection. Omitting

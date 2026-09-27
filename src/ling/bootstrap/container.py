@@ -51,6 +51,7 @@ def serve(database_path: str | Path) -> None:
         )
     deps = ToolDeps(
         open_unit_of_work=database.unit_of_work,
+        open_read_unit_of_work=database.read_unit_of_work,
         ids=UuidIdGenerator(),
         clock=SystemClock(),
         observer=observer,

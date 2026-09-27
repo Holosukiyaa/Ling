@@ -176,9 +176,9 @@ mentor 消费     consumed     不再可消费
 2. 调用领域规则或状态机验证目标变化。
 3. 检查通过后提交 Ling 状态；失败则保持原状态和原队列。
 
-`dashboard` 只读取这些记录，不提交。
+`dashboard` 只读取这些记录，不提交。它使用只读单元，而不是修改型用例的写事务。进入该查询之前的 session 解析同样使用只读单元。
 
-SQLite 用 WAL。schema 版本记在 SQLite `user_version`，当前是 6。没有版本标记的现有库会升到当前版本，已有的槽位、票据、锁和心跳都保留。版本 2 增加 `operation_receipts`，版本 3 为 `created_at` 增加索引，版本 4 为票据增加可空列 `target_slot_id`，旧票为 NULL。版本 5 增加 `slot_credentials` 和 `attachment_sessions`。旧槽位没有凭据行，直到被 provision。凭据列只保存 SHA-256 十六进制摘要，不保存原始 attachment token。版本 6 增加 `controller_leases`。同一时刻最多一行 `active_key = 1`，取得和接管都在 `BEGIN IMMEDIATE` 里完成。高于当前版本的库拒绝打开，不会静默降级。迁移在一个事务里完成，失败则整段回滚。读到第一次 `get` 时开启 `BEGIN IMMEDIATE`，把同一次用例里的读取和写入放进同一个写事务，避免两个领取或两份租约同时成功。领取、消费和派发仍靠领域检查；槽位、票据、路径和有效租约另有唯一约束，重复插入不会静默覆盖。
+SQLite 用 WAL。schema 版本记在 SQLite `user_version`，当前是 6。没有版本标记的现有库会升到当前版本，已有的槽位、票据、锁和心跳都保留。版本 2 增加 `operation_receipts`，版本 3 为 `created_at` 增加索引，版本 4 为票据增加可空列 `target_slot_id`，旧票为 NULL。版本 5 增加 `slot_credentials` 和 `attachment_sessions`。旧槽位没有凭据行，直到被 provision。凭据列只保存 SHA-256 十六进制摘要，不保存原始 attachment token。版本 6 增加 `controller_leases`。同一时刻最多一行 `active_key = 1`，取得和接管都在 `BEGIN IMMEDIATE` 里完成。高于当前版本的库拒绝打开，不会静默降级。迁移在一个事务里完成，失败则整段回滚。修改型用例在第一次读取时开启 `BEGIN IMMEDIATE`，把同一次用例里的读取和写入放进同一个写事务，避免两个领取或两份租约同时成功。`dashboard` 不走这条写事务：session 解析和业务快照各自在第一次读取时执行普通 `BEGIN`，只看到已提交的行，返回或失败前回滚并关闭连接，因此不会挡住其他连接的 `BEGIN IMMEDIATE`。session 解析只读 `attachment_sessions` 和对应槽位。它不读取 operation receipt。其他工具的接驳校验仍打开 `BEGIN IMMEDIATE`。领取、消费和派发仍靠领域检查；槽位、票据、路径和有效租约另有唯一约束，重复插入不会静默覆盖。
 
 接驳 session 不是 domain 实体。domain 不保存 token、摘要、租约或 MCP 连接。application 通过端口保存摘要、session 和总控租约，SQLite 实现这些端口。`LING_ATTACHMENT_TTL_SECONDS` 和 `LING_CONTROLLER_LEASE_TTL_SECONDS` 都是正整数秒数，默认 3600；空值或非法值使用默认值，并在 stderr 记一条警告。session 过期或撤销后不能再充当调用者。进程关闭或 detach 时撤销自己的 session，并释放绑定在该 session 上的租约，不向 stdout 写内容。重新 attach 替换旧 session 时，旧 session 上的租约一并释放。attach 和 detach 不写 operation receipt，也不进入 Coordinator 队列。
 
@@ -254,7 +254,7 @@ Ling 不选择模型，也不适配 Grok、Claude、Codex 或其他具体 Agent�
 4. 接入 MCP stdio 工具，让调用方自己的 Agent loop 可以驱动完整票据流。
 5. 增加只读 dashboard 查询。
 
-第 4 步和第 5 步已经接上。`python -m ling` 提供上面十二个工具，数据库路径来自 `--database` 或 `LING_DATABASE`。dashboard 走只读查询。worker session 只得到自己的投影；mentor 和 checker 仍得到完整快照。
+第 4 步和第 5 步已经接上。`python -m ling` 提供上面十二个工具，数据库路径来自 `--database` 或 `LING_DATABASE`。dashboard 的接驳校验和快照都走只读单元和普通 `BEGIN`，不占用写锁。worker session 只得到自己的投影；mentor 和 checker 仍得到完整快照。
 
 第一版不实现 FastAPI 页面、模型启动器或具体 Agent 适配器。可选的 Agent Coordinator 观测不是运行时依赖；未配置 URL 时它不存在。
 

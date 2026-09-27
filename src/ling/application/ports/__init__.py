@@ -2,6 +2,7 @@
 
 from ling.application.ports.attachments import (
     AttachmentSession,
+    AttachmentSessionLookup,
     AttachmentSessionRepository,
     SlotCredential,
     SlotCredentialRepository,
@@ -26,10 +27,11 @@ from ling.application.ports.repositories import (
     SlotRepository,
     TicketRepository,
 )
-from ling.application.ports.unit_of_work import UnitOfWork
+from ling.application.ports.unit_of_work import ReadOnlyUnitOfWork, UnitOfWork
 
 __all__ = [
     "AttachmentSession",
+    "AttachmentSessionLookup",
     "AttachmentSessionRepository",
     "Clock",
     "ConsumptionLockRepository",
@@ -41,6 +43,7 @@ __all__ = [
     "NullRuntimeEventSink",
     "NullRuntimeObserver",
     "RUNTIME_EVENT_SCHEMA",
+    "ReadOnlyUnitOfWork",
     "RuntimeEvent",
     "RuntimeEventSink",
     "RuntimeObserver",

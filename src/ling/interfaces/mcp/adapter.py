@@ -21,7 +21,7 @@ from ling.application.ports.clock import Clock
 from ling.application.ports.id_generator import IdGenerator
 from ling.application.ports.observability import NullRuntimeEventSink, RuntimeEventSink
 from ling.application.ports.observer import NullRuntimeObserver, RuntimeObserver
-from ling.application.ports.unit_of_work import UnitOfWork
+from ling.application.ports.unit_of_work import ReadOnlyUnitOfWork, UnitOfWork
 from ling.application.queries.resolve_attachment import execute as resolve_attachment
 from ling.interfaces.mcp.schemas import parse_input
 
@@ -84,6 +84,7 @@ class ToolDeps:
     """Local dependencies supplied by bootstrap. No concrete database type."""
 
     open_unit_of_work: Callable[[], UnitOfWork]
+    open_read_unit_of_work: Callable[[], ReadOnlyUnitOfWork]
     ids: IdGenerator
     clock: Clock
     observer: RuntimeObserver = field(default_factory=NullRuntimeObserver)
@@ -134,9 +135,9 @@ def call_use_case(deps: ToolDeps, function: Callable[..., Any], command: object)
 
 
 def read_dashboard(deps: ToolDeps, function: Callable[..., Any]) -> dict[str, Any]:
-    """Open one unit of work for the read-only dashboard."""
+    """Open one read snapshot, return it, and finish that connection."""
 
-    unit = deps.open_unit_of_work()
+    unit = deps.open_read_unit_of_work()
     try:
         return payload_from(
             function(
@@ -273,7 +274,7 @@ def gate_attachment(
 
     if name in _CONNECTION_TOOLS:
         return None, arguments
-    slot_id, template_id, refusal = _bound_slot(deps)
+    slot_id, template_id, refusal = _bound_slot(deps, read_only=name == "ling_dashboard")
     if refusal is not None or slot_id is None:
         if (
             name in _BOOTSTRAP_TOOLS
@@ -321,11 +322,15 @@ def revoke_bound_session(deps: ToolDeps) -> None:
 
 def _bound_slot(
     deps: ToolDeps,
+    *,
+    read_only: bool = False,
 ) -> tuple[str | None, str | None, dict[str, Any] | None]:
+    """Resolve the bound session. Dashboard uses a deferred read, not the writer lock."""
+
     session_id = deps.attachment.session_id
     if not session_id:
         return None, None, failed(deps, ATTACHMENT_REQUIRED, "attachment required")
-    unit = deps.open_unit_of_work()
+    unit = deps.open_read_unit_of_work() if read_only else deps.open_unit_of_work()
     try:
         resolved = resolve_attachment(session_id, uow=unit, clock=deps.clock)
     except Exception:

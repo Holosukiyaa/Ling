@@ -7,6 +7,7 @@ import threading
 from collections.abc import Callable
 from pathlib import Path
 from types import TracebackType
+from typing import Protocol
 
 from ling.infrastructure.persistence.sqlite.connection import connect
 from ling.infrastructure.persistence.sqlite.errors import StorageError
@@ -26,12 +27,17 @@ from ling.infrastructure.persistence.sqlite.repositories import (
 from ling.infrastructure.persistence.sqlite.schema import initialize
 
 
+class _Closeable(Protocol):
+    def close(self) -> None:
+        """Release this unit's connection."""
+
+
 class SqliteDatabase:
     """One Ling database file. Schema is created on first open."""
 
     def __init__(self, path: str | Path) -> None:
         self.path = str(path)
-        self._units: list[SqliteUnitOfWork] = []
+        self._units: list[_Closeable] = []
         self._units_lock = threading.Lock()
         with _closing(connect(self.path)) as connection:
             initialize(connection)
@@ -40,6 +46,14 @@ class SqliteDatabase:
         """Open a new unit of work on its own connection."""
 
         unit = SqliteUnitOfWork(connect(self.path), on_close=self._forget)
+        with self._units_lock:
+            self._units.append(unit)
+        return unit
+
+    def read_unit_of_work(self) -> SqliteReadUnitOfWork:
+        """Open a deferred read snapshot on its own connection."""
+
+        unit = SqliteReadUnitOfWork(connect(self.path), on_close=self._forget)
         with self._units_lock:
             self._units.append(unit)
         return unit
@@ -63,7 +77,7 @@ class SqliteDatabase:
     ) -> None:
         self.close()
 
-    def _forget(self, unit: SqliteUnitOfWork) -> None:
+    def _forget(self, unit: _Closeable) -> None:
         with self._units_lock:
             try:
                 self._units.remove(unit)
@@ -84,7 +98,7 @@ class SqliteUnitOfWork:
         self,
         connection: sqlite3.Connection,
         *,
-        on_close: Callable[[SqliteUnitOfWork], None] | None = None,
+        on_close: Callable[[_Closeable], None] | None = None,
     ) -> None:
         self._conn = connection
         self._on_close = on_close
@@ -229,6 +243,121 @@ class SqliteUnitOfWork:
         except sqlite3.Error as exc:
             raise StorageError("sqlite transaction failed") from exc
         self._transaction = True
+
+    def _rollback_sql(self) -> None:
+        if self._conn is None or not self._transaction:
+            self._transaction = False
+            return
+        try:
+            self._conn.execute("ROLLBACK")
+        except sqlite3.Error:
+            return
+        finally:
+            self._transaction = False
+
+
+class SqliteReadUnitOfWork:
+    """Read slots, tickets, locks, and one attachment session from a deferred snapshot.
+
+    The first read runs plain `BEGIN`, not `BEGIN IMMEDIATE`, so this connection
+    does not reserve the writer lock. Commit and stage are refused. Close ends
+    the snapshot before the caller returns. Operation receipts are not loaded.
+    """
+
+    def __init__(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        on_close: Callable[[_Closeable], None] | None = None,
+    ) -> None:
+        self._conn = connection
+        self._on_close = on_close
+        self._staged: list[tuple[str, str, object]] = []
+        self._released_file_locks: set[str] = set()
+        self._transaction = False
+        self.slots = SqliteSlotRepository(self)
+        self.tickets = SqliteTicketRepository(self)
+        self.consumption_locks = SqliteConsumptionLockRepository(self)
+        self.file_locks = SqliteFileLockRepository(self)
+        self.attachment_sessions = SqliteAttachmentSessionRepository(self)
+
+    def _connection(self) -> sqlite3.Connection:
+        if self._conn is None:
+            raise StorageError("unit of work is closed")
+        return self._conn
+
+    def staged(self, kind: str, key: str) -> object | None:
+        return None
+
+    def stage(self, kind: str, key: str, item: object) -> None:
+        raise StorageError("read unit of work cannot stage")
+
+    def note_loaded(self, kind: str, key: str) -> None:
+        return None
+
+    def begin_for_read(self) -> None:
+        """Open a deferred transaction. This does not reserve the writer lock."""
+
+        connection = self._require_open()
+        if self._transaction:
+            return
+        try:
+            connection.execute("BEGIN")
+        except sqlite3.Error as exc:
+            raise StorageError("sqlite transaction failed") from exc
+        self._transaction = True
+
+    def release_file_lock(self, ticket_id: str) -> None:
+        raise StorageError("read unit of work cannot release file locks")
+
+    def file_lock_released(self, ticket_id: str) -> bool:
+        return False
+
+    def commit(self) -> None:
+        raise StorageError("read unit of work cannot commit")
+
+    def rollback(self) -> None:
+        """End the read transaction. Committed rows in the file stay as they were."""
+
+        self._rollback_sql()
+
+    def close(self) -> None:
+        """End the snapshot, then close the connection."""
+
+        if self._conn is None:
+            return
+        self._rollback_sql()
+        self._conn.close()
+        self._conn = None
+        if self._on_close is not None:
+            self._on_close(self)
+
+    def __enter__(self) -> SqliteReadUnitOfWork:
+        self._require_open()
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        try:
+            if exc_type is not None:
+                self.rollback()
+        finally:
+            self.close()
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except Exception:
+            return
+
+    def _require_open(self) -> sqlite3.Connection:
+        if self._conn is None:
+            raise StorageError("unit of work is closed")
+        return self._conn
 
     def _rollback_sql(self) -> None:
         if self._conn is None or not self._transaction:

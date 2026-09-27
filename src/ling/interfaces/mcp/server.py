@@ -55,7 +55,7 @@ from ling.interfaces.mcp.tools.submit import handle as submit
 
 logger = logging.getLogger(__name__)
 
-_SILENT_TOOLS = frozenset({"ling_attach", "ling_detach"})
+_SILENT_TOOLS = frozenset({"ling_attach", "ling_detach", "ling_dashboard"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -260,7 +260,7 @@ def invoke_tool(deps: ToolDeps, name: str, arguments: dict[str, Any] | None) -> 
 
 
 def _observe(deps: ToolDeps, name: str, arguments: dict[str, Any], payload: dict[str, Any]) -> None:
-    """Hand a successful business result to the observer. Attach and detach stay local."""
+    """Hand a successful business result to the observer. Attach, detach, and dashboard stay local."""
 
     if name in _SILENT_TOOLS or not payload.get("ok"):
         return

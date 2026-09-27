@@ -6,6 +6,7 @@ from types import TracebackType
 from typing import Protocol, Self
 
 from ling.application.ports.attachments import (
+    AttachmentSessionLookup,
     AttachmentSessionRepository,
     SlotCredentialRepository,
 )
@@ -51,3 +52,35 @@ class UnitOfWork(Protocol):
         traceback: TracebackType | None,
     ) -> None:
         """Roll back when the block raised. Successful blocks commit explicitly."""
+
+
+class ReadOnlyUnitOfWork(Protocol):
+    """One consistent read snapshot. It cannot stage or publish writes.
+
+    Dashboard reads slots, tickets, consumption locks, and file locks here.
+    Dashboard attachment resolution reads one session and its slot here too.
+    Operation receipts are not on this port. `close` ends the snapshot.
+    """
+
+    slots: SlotRepository
+    tickets: TicketRepository
+    consumption_locks: ConsumptionLockRepository
+    file_locks: FileLockRepository
+    attachment_sessions: AttachmentSessionLookup
+
+    def rollback(self) -> None:
+        """End the snapshot. Nothing is published."""
+
+    def close(self) -> None:
+        """Finish the snapshot and release its connection."""
+
+    def __enter__(self) -> Self:
+        """Open the snapshot."""
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        """End the snapshot when the block leaves, including after an error."""

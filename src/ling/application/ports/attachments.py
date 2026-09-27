@@ -50,7 +50,14 @@ class SlotCredentialRepository(Protocol):
         """Stage `credential` until the unit of work commits."""
 
 
-class AttachmentSessionRepository(Protocol):
+class AttachmentSessionLookup(Protocol):
+    """Read one stored attachment session. This lookup does not stage writes."""
+
+    def get(self, session_id: str) -> AttachmentSession | None:
+        """Return the stored session, or None."""
+
+
+class AttachmentSessionRepository(AttachmentSessionLookup, Protocol):
     """Load and stage attachment sessions."""
 
     def get(self, session_id: str) -> AttachmentSession | None:

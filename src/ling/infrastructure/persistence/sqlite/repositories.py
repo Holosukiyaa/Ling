@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 from datetime import datetime
-from typing import TYPE_CHECKING
+from typing import Protocol
 
 from ling.application.ports.attachments import AttachmentSession, SlotCredential
 from ling.application.ports.leases import ControllerLease, ControllerLeaseHeld
@@ -16,14 +16,39 @@ from ling.domain.tickets.entities import Ticket, TicketId
 from ling.domain.tickets.states import ReviewResult, TicketState
 from ling.infrastructure.persistence.sqlite.errors import DuplicateRecord, StorageError
 
-if TYPE_CHECKING:
-    from ling.infrastructure.persistence.sqlite.unit_of_work import SqliteUnitOfWork
+
+class SqlUnit(Protocol):
+    """Stage and connection surface shared by write and read units of work."""
+
+    _staged: list[tuple[str, str, object]]
+    _released_file_locks: set[str]
+
+    def begin_for_read(self) -> None:
+        """Start this unit's transaction before a domain read."""
+
+    def staged(self, kind: str, key: str) -> object | None:
+        """Return the newest staged aggregate of this identity, if any."""
+
+    def note_loaded(self, kind: str, key: str) -> None:
+        """Remember that `key` already has a row."""
+
+    def stage(self, kind: str, key: str, item: object) -> None:
+        """Remember `item` until commit."""
+
+    def _connection(self) -> sqlite3.Connection:
+        """The open connection."""
+
+    def file_lock_released(self, ticket_id: str) -> bool:
+        """True when this unit has staged that ticket's file lock for removal."""
+
+    def release_file_lock(self, ticket_id: str) -> None:
+        """Stage removal of one file lock."""
 
 
 class SqliteSlotRepository:
     """Stage slots on the current unit of work."""
 
-    def __init__(self, unit_of_work: SqliteUnitOfWork) -> None:
+    def __init__(self, unit_of_work: SqlUnit) -> None:
         self._uow = unit_of_work
 
     def get(self, slot_id: SlotId) -> Slot | None:
@@ -64,7 +89,7 @@ class SqliteSlotRepository:
 class SqliteTicketRepository:
     """Stage tickets on the current unit of work."""
 
-    def __init__(self, unit_of_work: SqliteUnitOfWork) -> None:
+    def __init__(self, unit_of_work: SqlUnit) -> None:
         self._uow = unit_of_work
 
     def get(self, ticket_id: TicketId) -> Ticket | None:
@@ -110,7 +135,7 @@ class SqliteTicketRepository:
 class SqliteConsumptionLockRepository:
     """Stage consumption locks on the current unit of work."""
 
-    def __init__(self, unit_of_work: SqliteUnitOfWork) -> None:
+    def __init__(self, unit_of_work: SqlUnit) -> None:
         self._uow = unit_of_work
 
     def get(self, mentor: SlotId) -> ConsumptionLock | None:
@@ -148,7 +173,7 @@ class SqliteConsumptionLockRepository:
 class SqliteFileLockRepository:
     """Stage one file lock per ticket."""
 
-    def __init__(self, unit_of_work: SqliteUnitOfWork) -> None:
+    def __init__(self, unit_of_work: SqlUnit) -> None:
         self._uow = unit_of_work
 
     def get(self, ticket_id: TicketId) -> FileLock | None:
@@ -196,7 +221,7 @@ class SqliteFileLockRepository:
 class SqliteOperationReceiptRepository:
     """Stage one receipt per operation id."""
 
-    def __init__(self, unit_of_work: SqliteUnitOfWork) -> None:
+    def __init__(self, unit_of_work: SqlUnit) -> None:
         self._uow = unit_of_work
 
     def get(self, operation_id: str) -> OperationReceipt | None:
@@ -223,7 +248,7 @@ class SqliteOperationReceiptRepository:
 class SqliteSlotCredentialRepository:
     """Stage one SHA-256 credential per slot. The raw token is never written."""
 
-    def __init__(self, unit_of_work: SqliteUnitOfWork) -> None:
+    def __init__(self, unit_of_work: SqlUnit) -> None:
         self._uow = unit_of_work
 
     def get(self, slot_id: str) -> SlotCredential | None:
@@ -247,7 +272,7 @@ class SqliteSlotCredentialRepository:
 class SqliteAttachmentSessionRepository:
     """Stage attachment sessions. Revocation is an update of the same row."""
 
-    def __init__(self, unit_of_work: SqliteUnitOfWork) -> None:
+    def __init__(self, unit_of_work: SqlUnit) -> None:
         self._uow = unit_of_work
 
     def get(self, session_id: str) -> AttachmentSession | None:
@@ -274,7 +299,7 @@ class SqliteAttachmentSessionRepository:
 class SqliteControllerLeaseRepository:
     """Stage the single active controller lease and its released history."""
 
-    def __init__(self, unit_of_work: SqliteUnitOfWork) -> None:
+    def __init__(self, unit_of_work: SqlUnit) -> None:
         self._uow = unit_of_work
 
     def get(self, lease_id: str) -> ControllerLease | None:
@@ -338,7 +363,7 @@ def _receipt_from_row(row: sqlite3.Row) -> OperationReceipt:
     )
 
 
-def _staged(unit_of_work: SqliteUnitOfWork, kind: str) -> list[tuple[str, object]]:
+def _staged(unit_of_work: SqlUnit, kind: str) -> list[tuple[str, object]]:
     return [(key, item) for staged_kind, key, item in unit_of_work._staged if staged_kind == kind]
 
 
