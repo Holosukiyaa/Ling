@@ -18,5 +18,9 @@ def handle(arguments: dict[str, Any], deps: ToolDeps) -> dict[str, Any]:
     return call_use_case(
         deps,
         execute,
-        ConsumeCommand(actor_slot_id=parsed.actor_slot_id, ticket_id=parsed.ticket_id),
+        ConsumeCommand(
+            actor_slot_id=parsed.actor_slot_id,
+            ticket_id=parsed.ticket_id,
+            operation_id=parsed.operation_id,
+        ),
     )

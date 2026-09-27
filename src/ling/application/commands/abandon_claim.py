@@ -5,14 +5,17 @@ from __future__ import annotations
 from datetime import datetime
 
 from ling.application.commands.support import (
+    commit_operation,
     domain_code,
     load_slot,
     load_ticket,
     not_found,
     parse_slot_id,
     parse_ticket_id,
+    prepare_operation,
 )
 from ling.application.dto import (
+    CONFLICT,
     FORBIDDEN,
     INVALID_INPUT,
     INVALID_TRANSITION,
@@ -37,8 +40,32 @@ def execute(
 ) -> AbandonClaimResult:
     """Return the claimant's ticket to queue 1 and delete its file lock."""
 
-    operation_id = ids.new_operation_id()
-    occurred_at = clock.now()
+    prepared = prepare_operation(
+        uow,
+        ids,
+        clock,
+        command.operation_id,
+        "abandon_claim",
+        {"actor_slot_id": command.actor_slot_id, "ticket_id": command.ticket_id},
+        AbandonClaimResult,
+    )
+    if prepared.invalid or prepared.conflict or prepared.replay is not None:
+        uow.rollback()
+        if isinstance(prepared.replay, AbandonClaimResult):
+            return prepared.replay
+        return _plain(
+            prepared.operation_id,
+            prepared.occurred_at,
+            INVALID_INPUT if prepared.invalid else CONFLICT,
+            (
+                "operation id must be a non-empty string"
+                if prepared.invalid
+                else "operation id was already used for a different request"
+            ),
+            ticket_id=None,
+        )
+    operation_id = prepared.operation_id
+    occurred_at = prepared.occurred_at
     actor_id = parse_slot_id(command.actor_slot_id)
     ticket_id = parse_ticket_id(command.ticket_id)
     if actor_id is None or ticket_id is None:
@@ -113,8 +140,17 @@ def execute(
         )
     uow.tickets.save(ticket)
     uow.file_locks.release(ticket.ticket_id)
-    uow.commit()
-    return _snapshot(operation_id, occurred_at, ticket, ok=True, message="abandoned")
+    result = _snapshot(operation_id, occurred_at, ticket, ok=True, message="abandoned")
+    published = commit_operation(uow, prepared, result)
+    if isinstance(published, AbandonClaimResult):
+        return published
+    return _plain(
+        operation_id,
+        occurred_at,
+        CONFLICT,
+        "operation id was already used for a different request",
+        ticket_id=ticket.ticket_id.value,
+    )
 
 
 def _plain(

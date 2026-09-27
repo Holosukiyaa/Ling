@@ -24,6 +24,7 @@ class RegisterSlotCommand:
 
     slot_id: str
     template_id: str
+    operation_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,6 +38,7 @@ class RegisterSlotResult:
     template_id: str | None = None
     error_code: str | None = None
     message: str = ""
+    replay: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,6 +46,7 @@ class HeartbeatCommand:
     """One heartbeat from an already registered slot."""
 
     slot_id: str
+    operation_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,6 +61,7 @@ class HeartbeatResult:
     last_heartbeat_at: datetime | None = None
     error_code: str | None = None
     message: str = ""
+    replay: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,6 +71,7 @@ class DispatchCommand:
     issuer_slot_id: str
     target_template_id: str
     content: str
+    operation_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,6 +86,7 @@ class DispatchResult:
     queue: int | None = None
     error_code: str | None = None
     message: str = ""
+    replay: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,6 +95,7 @@ class ClaimCommand:
 
     actor_slot_id: str
     ticket_id: str
+    operation_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,6 +111,7 @@ class ClaimResult:
     claimant: str | None = None
     error_code: str | None = None
     message: str = ""
+    replay: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,6 +120,7 @@ class AbandonClaimCommand:
 
     actor_slot_id: str
     ticket_id: str
+    operation_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,6 +136,7 @@ class AbandonClaimResult:
     claimant: str | None = None
     error_code: str | None = None
     message: str = ""
+    replay: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -135,6 +145,7 @@ class SubmitCommand:
 
     actor_slot_id: str
     ticket_id: str
+    operation_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -150,6 +161,7 @@ class SubmitResult:
     claimant: str | None = None
     error_code: str | None = None
     message: str = ""
+    replay: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -159,6 +171,7 @@ class ReviewCommand:
     actor_slot_id: str
     ticket_id: str
     decision: str
+    operation_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -174,6 +187,7 @@ class ReviewResult:
     review_result: str | None = None
     error_code: str | None = None
     message: str = ""
+    replay: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -182,6 +196,7 @@ class ConsumeCommand:
 
     actor_slot_id: str
     ticket_id: str
+    operation_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -197,6 +212,7 @@ class ConsumeResult:
     lock_held: bool | None = None
     error_code: str | None = None
     message: str = ""
+    replay: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -206,6 +222,7 @@ class AcquireFileLockCommand:
     actor_slot_id: str
     ticket_id: str
     paths: tuple[str, ...]
+    operation_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -222,6 +239,7 @@ class AcquireFileLockResult:
     paths: tuple[str, ...] | None = None
     error_code: str | None = None
     message: str = ""
+    replay: bool = False
 
 
 @dataclass(frozen=True, slots=True)

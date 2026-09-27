@@ -5,6 +5,7 @@ from __future__ import annotations
 from types import TracebackType
 from typing import Protocol, Self
 
+from ling.application.ports.operation_receipts import OperationReceiptRepository
 from ling.application.ports.repositories import (
     ConsumptionLockRepository,
     FileLockRepository,
@@ -14,7 +15,7 @@ from ling.application.ports.repositories import (
 
 
 class UnitOfWork(Protocol):
-    """Transaction boundary for slots, tickets, consumption locks, and file locks.
+    """Transaction boundary for slots, tickets, locks, and operation receipts.
 
     Implementations must not expose a database driver. `commit` is the only
     point at which staged saves become durable. `rollback` drops the stage.
@@ -24,6 +25,7 @@ class UnitOfWork(Protocol):
     tickets: TicketRepository
     consumption_locks: ConsumptionLockRepository
     file_locks: FileLockRepository
+    operation_receipts: OperationReceiptRepository
 
     def commit(self) -> None:
         """Publish staged aggregates in the order they were saved."""

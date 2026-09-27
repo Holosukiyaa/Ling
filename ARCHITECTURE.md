@@ -168,7 +168,11 @@ mentor 消费     consumed     不再可消费
 
 `dashboard` 只读取这些记录，不提交。
 
-SQLite 用 WAL。读到第一次 `get` 时开启 `BEGIN IMMEDIATE`，把同一次用例里的读取和写入放进同一个写事务，避免两个领取同时成功。领取、消费和派发仍靠领域检查；槽位、票据和路径另有唯一约束，重复插入不会静默覆盖。
+SQLite 用 WAL。schema 版本记在 SQLite `user_version`，当前是 3。没有版本标记的现有库会升到当前版本，已有的槽位、票据、锁和心跳都保留。版本 2 增加 `operation_receipts`，版本 3 为 `created_at` 增加索引。高于当前版本的库拒绝打开，不会静默降级。迁移在一个事务里完成，失败则整段回滚。读到第一次 `get` 时开启 `BEGIN IMMEDIATE`，把同一次用例里的读取和写入放进同一个写事务，避免两个领取同时成功。领取、消费和派发仍靠领域检查；槽位、票据和路径另有唯一约束，重复插入不会静默覆盖。
+
+九个修改型命令可以接收调用方的 `operation_id`。不提供时仍由 Ling 生成。成功提交时，回执和这次业务写入在同一个 commit 里落盘。之后用同一个 `operation_id`、同一个工具和同一组规范化参数重试，会返回第一次的成功结果，不再次执行状态转换，也不再次通知可选的 Coordinator 观测。工具或参数不同则返回 `conflict`。`invalid_input`、`not_found`、`forbidden`、领域拒绝和 `internal` 不写回执。`dashboard` 没有 `operation_id` 输入。
+
+`operation_receipts` 不属于 domain，默认永久保留。部署者用 `python -m ling.maintenance --database PATH --before ISO_TIMESTAMP` 显式删除 `created_at` 早于 cutoff 的回执。这个命令不启动 MCP，不产生 Coordinator 观测，也不在服务启动时自动运行。清理是单独的事务，只删除回执；槽位、票据、锁和业务状态保持原样。被删掉的 `operation_id` 之后不再保证能重放。
 
 ## 6. MCP 边界
 
@@ -216,7 +220,9 @@ Ling 是槽位、票据、队列、文件锁和权限的唯一事实来源。cla
 
 观测不调用任务领取、任务状态、文件锁或 Agent 启停接口。`http://localhost:9889/dashboard` 是可选观测服务自己的页面，不是 Ling 的依赖，Ling 也不连接它。
 
-Ling 不 import `ag`。`ag` 不是运行时服务，也不是必需依赖。worker 如果要在自己的代码票里使用 ag，那是 worker 环境里的事，不是 Ling 用例的一步。
+Ling 不 import `ag`。`ag` 只是开发期治理工具，不是运行时服务，也不是 Ling 的运行时依赖。worker 如果要在自己的代码票里使用 ag，那是 worker 环境里的事，不是 Ling 用例的一步。
+
+Ling 不选择模型，也不适配 Grok、Claude、Codex 或其他具体 Agent。用户自行启动 Agent，再连接 Ling 的 MCP。
 
 ## 8. 实施顺序
 

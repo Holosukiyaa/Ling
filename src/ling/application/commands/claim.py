@@ -5,15 +5,18 @@ from __future__ import annotations
 from datetime import datetime
 
 from ling.application.commands.support import (
+    commit_operation,
     domain_code,
     load_slot,
     load_ticket,
     not_found,
     parse_slot_id,
     parse_ticket_id,
+    prepare_operation,
 )
 from ling.application.dto import (
     ALREADY_CLAIMED,
+    CONFLICT,
     FORBIDDEN,
     INVALID_INPUT,
     INVALID_TRANSITION,
@@ -38,8 +41,32 @@ def execute(
 ) -> ClaimResult:
     """Check the worker and the queued ticket, then record the claimant."""
 
-    operation_id = ids.new_operation_id()
-    occurred_at = clock.now()
+    prepared = prepare_operation(
+        uow,
+        ids,
+        clock,
+        command.operation_id,
+        "claim",
+        {"actor_slot_id": command.actor_slot_id, "ticket_id": command.ticket_id},
+        ClaimResult,
+    )
+    if prepared.invalid or prepared.conflict or prepared.replay is not None:
+        uow.rollback()
+        if isinstance(prepared.replay, ClaimResult):
+            return prepared.replay
+        return _failed(
+            prepared.operation_id,
+            prepared.occurred_at,
+            INVALID_INPUT if prepared.invalid else CONFLICT,
+            (
+                "operation id must be a non-empty string"
+                if prepared.invalid
+                else "operation id was already used for a different request"
+            ),
+            ticket_id=command.ticket_id or None,
+        )
+    operation_id = prepared.operation_id
+    occurred_at = prepared.occurred_at
     actor_id = parse_slot_id(command.actor_slot_id)
     ticket_id = parse_ticket_id(command.ticket_id)
     if actor_id is None or ticket_id is None:
@@ -103,8 +130,17 @@ def execute(
             message=exc.message,
         )
     uow.tickets.save(ticket)
-    uow.commit()
-    return _snapshot(operation_id, occurred_at, ticket, ok=True, message="claimed")
+    result = _snapshot(operation_id, occurred_at, ticket, ok=True, message="claimed")
+    published = commit_operation(uow, prepared, result)
+    if isinstance(published, ClaimResult):
+        return published
+    return _failed(
+        operation_id,
+        occurred_at,
+        CONFLICT,
+        "operation id was already used for a different request",
+        ticket_id=ticket.ticket_id.value,
+    )
 
 
 def _failed(

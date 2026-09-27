@@ -5,14 +5,17 @@ from __future__ import annotations
 from datetime import datetime
 
 from ling.application.commands.support import (
+    commit_operation,
     domain_code,
     known_template,
     load_slot,
     not_found,
     parse_slot_id,
     parse_template_id,
+    prepare_operation,
 )
 from ling.application.dto import (
+    CONFLICT,
     CONSUMPTION_LOCK_HELD,
     FORBIDDEN,
     INVALID_INPUT,
@@ -38,8 +41,35 @@ def execute(
 ) -> DispatchResult:
     """Occupy the consumption lock and store a queued ticket in one commit."""
 
-    operation_id = ids.new_operation_id()
-    occurred_at = clock.now()
+    prepared = prepare_operation(
+        uow,
+        ids,
+        clock,
+        command.operation_id,
+        "dispatch",
+        {
+            "issuer_slot_id": command.issuer_slot_id,
+            "target_template_id": command.target_template_id,
+            "content": command.content,
+        },
+        DispatchResult,
+    )
+    if prepared.invalid or prepared.conflict or prepared.replay is not None:
+        uow.rollback()
+        if isinstance(prepared.replay, DispatchResult):
+            return prepared.replay
+        return _refused(
+            prepared.operation_id,
+            prepared.occurred_at,
+            INVALID_INPUT if prepared.invalid else CONFLICT,
+            (
+                "operation id must be a non-empty string"
+                if prepared.invalid
+                else "operation id was already used for a different request"
+            ),
+        )
+    operation_id = prepared.operation_id
+    occurred_at = prepared.occurred_at
     issuer_id = parse_slot_id(command.issuer_slot_id)
     target_id = parse_template_id(command.target_template_id)
     if issuer_id is None or target_id is None or not isinstance(command.content, str):
@@ -95,9 +125,8 @@ def execute(
         return _refused(operation_id, occurred_at, domain_code(exc), exc.message)
     uow.tickets.save(ticket)
     uow.consumption_locks.save(lock)
-    uow.commit()
     queue = ticket.queue
-    return DispatchResult(
+    result = DispatchResult(
         ok=True,
         operation_id=operation_id,
         occurred_at=occurred_at,
@@ -105,6 +134,15 @@ def execute(
         state=ticket.state.value,
         queue=None if queue is None else queue.number,
         message="dispatched",
+    )
+    published = commit_operation(uow, prepared, result)
+    if isinstance(published, DispatchResult):
+        return published
+    return _refused(
+        operation_id,
+        occurred_at,
+        CONFLICT,
+        "operation id was already used for a different request",
     )
 
 

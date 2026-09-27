@@ -6,6 +6,7 @@ import sqlite3
 from datetime import datetime
 from typing import TYPE_CHECKING
 
+from ling.application.ports.operation_receipts import OperationReceipt, OperationReceiptTaken
 from ling.domain.agents.entities import Slot, template_catalog
 from ling.domain.agents.values import SlotId, TemplateId
 from ling.domain.locks import ConsumptionLock, FileLock
@@ -188,6 +189,50 @@ class SqliteFileLockRepository:
         self._uow.release_file_lock(ticket_id.value)
 
 
+class SqliteOperationReceiptRepository:
+    """Stage one receipt per operation id."""
+
+    def __init__(self, unit_of_work: SqliteUnitOfWork) -> None:
+        self._uow = unit_of_work
+
+    def get(self, operation_id: str) -> OperationReceipt | None:
+        self._uow.begin_for_read()
+        staged = self._uow.staged("operation_receipt", operation_id)
+        if isinstance(staged, OperationReceipt):
+            return staged
+        row = self._uow._connection().execute(
+            """
+            SELECT operation_id, command_name, fingerprint, result_json, created_at
+            FROM operation_receipts WHERE operation_id = ?
+            """,
+            (operation_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        self._uow.note_loaded("operation_receipt", operation_id)
+        return _receipt_from_row(row)
+
+    def save(self, receipt: OperationReceipt) -> None:
+        self._uow.stage("operation_receipt", receipt.operation_id, receipt)
+
+
+def _receipt_from_row(row: sqlite3.Row) -> OperationReceipt:
+    created_at = row["created_at"]
+    if not isinstance(created_at, str):
+        raise StorageError(f"operation {row['operation_id']} has no created time")
+    try:
+        parsed = datetime.fromisoformat(created_at)
+    except ValueError as exc:
+        raise StorageError(f"operation {row['operation_id']} has an unreadable created time") from exc
+    return OperationReceipt(
+        operation_id=str(row["operation_id"]),
+        command_name=str(row["command_name"]),
+        fingerprint=str(row["fingerprint"]),
+        result_json=str(row["result_json"]),
+        created_at=parsed,
+    )
+
+
 def _staged(unit_of_work: SqliteUnitOfWork, kind: str) -> list[tuple[str, object]]:
     return [(key, item) for staged_kind, key, item in unit_of_work._staged if staged_kind == kind]
 
@@ -223,6 +268,11 @@ def insert_aggregate(connection: sqlite3.Connection, kind: str, item: object) ->
             if not isinstance(item, FileLock):
                 raise StorageError("file lock save received the wrong aggregate")
             _insert_file_lock(connection, item)
+            return
+        if kind == "operation_receipt":
+            if not isinstance(item, OperationReceipt):
+                raise StorageError("operation receipt save received the wrong aggregate")
+            _insert_operation_receipt(connection, item)
             return
         if not isinstance(item, ConsumptionLock):
             raise StorageError("consumption lock save received the wrong aggregate")
@@ -380,6 +430,26 @@ def _slot_values(slot: Slot) -> tuple[str, str, int, str | None]:
         1 if slot.online else 0,
         _format_time(slot.last_heartbeat_at),
     )
+
+
+def _insert_operation_receipt(connection: sqlite3.Connection, receipt: OperationReceipt) -> None:
+    try:
+        connection.execute(
+            """
+            INSERT INTO operation_receipts (
+                operation_id, command_name, fingerprint, result_json, created_at
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                receipt.operation_id,
+                receipt.command_name,
+                receipt.fingerprint,
+                receipt.result_json,
+                receipt.created_at.isoformat(),
+            ),
+        )
+    except sqlite3.IntegrityError as exc:
+        raise OperationReceiptTaken(receipt.operation_id) from exc
 
 
 def _insert_file_lock(connection: sqlite3.Connection, lock: FileLock) -> None:

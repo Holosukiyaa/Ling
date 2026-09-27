@@ -13,6 +13,7 @@ from ling.infrastructure.persistence.sqlite.errors import StorageError
 from ling.infrastructure.persistence.sqlite.repositories import (
     SqliteConsumptionLockRepository,
     SqliteFileLockRepository,
+    SqliteOperationReceiptRepository,
     SqliteSlotRepository,
     SqliteTicketRepository,
     insert_aggregate,
@@ -92,6 +93,7 @@ class SqliteUnitOfWork:
         self.tickets = SqliteTicketRepository(self)
         self.consumption_locks = SqliteConsumptionLockRepository(self)
         self.file_locks = SqliteFileLockRepository(self)
+        self.operation_receipts = SqliteOperationReceiptRepository(self)
 
     def _connection(self) -> sqlite3.Connection:
         """The open connection. Closed units raise `StorageError`."""

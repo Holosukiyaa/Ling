@@ -166,7 +166,8 @@ def build_server(deps: ToolDeps) -> Server:
                     "message": "request failed",
                 }
             else:
-                _observe(deps, name, arguments or {}, payload)
+                if not payload.pop("replay", False):
+                    _observe(deps, name, arguments or {}, payload)
         return types.CallToolResult(
             content=[types.TextContent(type="text", text=json.dumps(payload))],
             structuredContent=payload,

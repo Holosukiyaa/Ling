@@ -18,5 +18,9 @@ def handle(arguments: dict[str, Any], deps: ToolDeps) -> dict[str, Any]:
     return call_use_case(
         deps,
         execute,
-        RegisterSlotCommand(slot_id=parsed.slot_id, template_id=parsed.template_id),
+        RegisterSlotCommand(
+            slot_id=parsed.slot_id,
+            template_id=parsed.template_id,
+            operation_id=parsed.operation_id,
+        ),
     )

@@ -5,14 +5,16 @@ from __future__ import annotations
 from datetime import datetime
 
 from ling.application.commands.support import (
+    commit_operation,
     domain_code,
     load_slot,
     load_ticket,
     not_found,
     parse_slot_id,
     parse_ticket_id,
+    prepare_operation,
 )
-from ling.application.dto import NOT_ISSUER, INVALID_INPUT, ConsumeCommand, ConsumeResult
+from ling.application.dto import CONFLICT, NOT_ISSUER, INVALID_INPUT, ConsumeCommand, ConsumeResult
 from ling.application.ports.clock import Clock
 from ling.application.ports.id_generator import IdGenerator
 from ling.application.ports.unit_of_work import UnitOfWork
@@ -29,8 +31,32 @@ def execute(
 ) -> ConsumeResult:
     """Consume the ticket, release the consumption lock, and drop its file locks."""
 
-    operation_id = ids.new_operation_id()
-    occurred_at = clock.now()
+    prepared = prepare_operation(
+        uow,
+        ids,
+        clock,
+        command.operation_id,
+        "consume",
+        {"actor_slot_id": command.actor_slot_id, "ticket_id": command.ticket_id},
+        ConsumeResult,
+    )
+    if prepared.invalid or prepared.conflict or prepared.replay is not None:
+        uow.rollback()
+        if isinstance(prepared.replay, ConsumeResult):
+            return prepared.replay
+        return _plain(
+            prepared.operation_id,
+            prepared.occurred_at,
+            INVALID_INPUT if prepared.invalid else CONFLICT,
+            (
+                "operation id must be a non-empty string"
+                if prepared.invalid
+                else "operation id was already used for a different request"
+            ),
+            ticket_id=None,
+        )
+    operation_id = prepared.operation_id
+    occurred_at = prepared.occurred_at
     actor_id = parse_slot_id(command.actor_slot_id)
     ticket_id = parse_ticket_id(command.ticket_id)
     if actor_id is None or ticket_id is None:
@@ -92,14 +118,23 @@ def execute(
     uow.tickets.save(ticket)
     uow.consumption_locks.save(lock)
     uow.file_locks.release(ticket.ticket_id)
-    uow.commit()
-    return _snapshot(
+    result = _snapshot(
         operation_id,
         occurred_at,
         ticket,
         lock_held=lock.held,
         ok=True,
         message="consumed",
+    )
+    published = commit_operation(uow, prepared, result)
+    if isinstance(published, ConsumeResult):
+        return published
+    return _plain(
+        operation_id,
+        occurred_at,
+        CONFLICT,
+        "operation id was already used for a different request",
+        ticket_id=ticket.ticket_id.value,
     )
 
 

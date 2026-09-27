@@ -11,48 +11,52 @@ class _Input(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
 
-class RegisterSlotInput(_Input):
+class _Mutating(_Input):
+    operation_id: str | None = Field(default=None, min_length=1)
+
+
+class RegisterSlotInput(_Mutating):
     slot_id: str = Field(min_length=1)
     template_id: str = Field(min_length=1)
 
 
-class HeartbeatInput(_Input):
+class HeartbeatInput(_Mutating):
     slot_id: str = Field(min_length=1)
 
 
-class DispatchInput(_Input):
+class DispatchInput(_Mutating):
     issuer_slot_id: str = Field(min_length=1)
     target_template_id: str = Field(min_length=1)
     content: str = Field(min_length=1)
 
 
-class ClaimInput(_Input):
+class ClaimInput(_Mutating):
     actor_slot_id: str = Field(min_length=1)
     ticket_id: str = Field(min_length=1)
 
 
-class AbandonClaimInput(_Input):
+class AbandonClaimInput(_Mutating):
     actor_slot_id: str = Field(min_length=1)
     ticket_id: str = Field(min_length=1)
 
 
-class SubmitInput(_Input):
+class SubmitInput(_Mutating):
     actor_slot_id: str = Field(min_length=1)
     ticket_id: str = Field(min_length=1)
 
 
-class ReviewInput(_Input):
+class ReviewInput(_Mutating):
     actor_slot_id: str = Field(min_length=1)
     ticket_id: str = Field(min_length=1)
     decision: str = Field(min_length=1)
 
 
-class ConsumeInput(_Input):
+class ConsumeInput(_Mutating):
     actor_slot_id: str = Field(min_length=1)
     ticket_id: str = Field(min_length=1)
 
 
-class AcquireFileLockInput(_Input):
+class AcquireFileLockInput(_Mutating):
     actor_slot_id: str = Field(min_length=1)
     ticket_id: str = Field(min_length=1)
     paths: list[str] = Field(min_length=1)

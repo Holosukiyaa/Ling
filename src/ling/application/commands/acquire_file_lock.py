@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from ling.application.commands.support import (
+    commit_operation,
     domain_code,
     load_slot,
     load_ticket,
@@ -12,8 +13,10 @@ from ling.application.commands.support import (
     parse_paths,
     parse_slot_id,
     parse_ticket_id,
+    prepare_operation,
 )
 from ling.application.dto import (
+    CONFLICT,
     FORBIDDEN,
     INVALID_INPUT,
     AcquireFileLockCommand,
@@ -38,8 +41,36 @@ def execute(
 ) -> AcquireFileLockResult:
     """Store Ling's file-lock record when the worker holds the claimed ticket."""
 
-    operation_id = ids.new_operation_id()
-    occurred_at = clock.now()
+    prepared = prepare_operation(
+        uow,
+        ids,
+        clock,
+        command.operation_id,
+        "acquire_file_lock",
+        {
+            "actor_slot_id": command.actor_slot_id,
+            "ticket_id": command.ticket_id,
+            "paths": command.paths,
+        },
+        AcquireFileLockResult,
+    )
+    if prepared.invalid or prepared.conflict or prepared.replay is not None:
+        uow.rollback()
+        if isinstance(prepared.replay, AcquireFileLockResult):
+            return prepared.replay
+        return _plain(
+            prepared.operation_id,
+            prepared.occurred_at,
+            INVALID_INPUT if prepared.invalid else CONFLICT,
+            (
+                "operation id must be a non-empty string"
+                if prepared.invalid
+                else "operation id was already used for a different request"
+            ),
+            ticket_id=None,
+        )
+    operation_id = prepared.operation_id
+    occurred_at = prepared.occurred_at
     actor_id = parse_slot_id(command.actor_slot_id)
     ticket_id = parse_ticket_id(command.ticket_id)
     if actor_id is None or ticket_id is None:
@@ -118,14 +149,23 @@ def execute(
     else:
         lock = existing.include(paths)
     uow.file_locks.save(lock)
-    uow.commit()
-    return _snapshot(
+    result = _snapshot(
         operation_id,
         occurred_at,
         ticket,
         ok=True,
         message="file lock held",
         paths=tuple(sorted(lock.paths)),
+    )
+    published = commit_operation(uow, prepared, result)
+    if isinstance(published, AcquireFileLockResult):
+        return published
+    return _plain(
+        operation_id,
+        occurred_at,
+        CONFLICT,
+        "operation id was already used for a different request",
+        ticket_id=ticket.ticket_id.value,
     )
 
 

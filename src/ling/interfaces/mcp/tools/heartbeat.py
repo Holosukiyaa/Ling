@@ -15,4 +15,8 @@ def handle(arguments: dict[str, Any], deps: ToolDeps) -> dict[str, Any]:
     if error is not None or parsed is None:
         return error or {}
     assert isinstance(parsed, HeartbeatInput)
-    return call_use_case(deps, execute, HeartbeatCommand(slot_id=parsed.slot_id))
+    return call_use_case(
+        deps,
+        execute,
+        HeartbeatCommand(slot_id=parsed.slot_id, operation_id=parsed.operation_id),
+    )

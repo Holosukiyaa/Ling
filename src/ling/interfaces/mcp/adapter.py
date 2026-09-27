@@ -128,6 +128,7 @@ def payload_from(result: object) -> dict[str, Any]:
         "tickets",
         "consumption_locks",
         "file_locks",
+        "replay",
     ):
         if hasattr(result, name):
             payload[name] = _jsonable(getattr(result, name))

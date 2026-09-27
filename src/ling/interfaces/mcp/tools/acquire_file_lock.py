@@ -22,5 +22,6 @@ def handle(arguments: dict[str, Any], deps: ToolDeps) -> dict[str, Any]:
             actor_slot_id=parsed.actor_slot_id,
             ticket_id=parsed.ticket_id,
             paths=tuple(parsed.paths),
+            operation_id=parsed.operation_id,
         ),
     )

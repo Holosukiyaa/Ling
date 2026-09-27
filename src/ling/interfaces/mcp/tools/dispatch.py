@@ -22,5 +22,6 @@ def handle(arguments: dict[str, Any], deps: ToolDeps) -> dict[str, Any]:
             issuer_slot_id=parsed.issuer_slot_id,
             target_template_id=parsed.target_template_id,
             content=parsed.content,
+            operation_id=parsed.operation_id,
         ),
     )
