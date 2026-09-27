@@ -8,6 +8,7 @@ import threading
 from pathlib import Path
 
 from ling.application.ports.observability import RuntimeEvent
+from ling.infrastructure.observability.file_lock import InterprocessFileLock
 
 logger = logging.getLogger(__name__)
 
@@ -17,39 +18,40 @@ class JsonlRuntimeEventSink:
 
     def __init__(self, path: Path) -> None:
         self._path = path
-        self._lock = threading.Lock()
-        self._handle: object | None = None
+        self._thread_lock = threading.Lock()
+        self._file_lock = InterprocessFileLock(Path(str(path) + ".lock"))
 
     def record(self, event: RuntimeEvent) -> None:
-        """Append the event and flush. A write failure does not raise."""
+        """Append one full line under the process lock, then flush."""
 
         try:
             line = json.dumps(event.as_dict(), ensure_ascii=False, separators=(",", ":")) + "\n"
-            with self._lock:
-                handle = self._open()
-                handle.write(line)
-                handle.flush()
+            encoded = line.encode("utf-8")
         except Exception:
             logger.warning("runtime event log write failed", exc_info=True)
+            return
+        with self._thread_lock:
+            descriptor = None
+            try:
+                self._path.parent.mkdir(parents=True, exist_ok=True)
+                descriptor = self._file_lock.acquire()
+                with self._path.open("ab", buffering=0) as handle:
+                    handle.write(encoded)
+                    handle.flush()
+            except Exception:
+                logger.warning("runtime event log write failed", exc_info=True)
+            finally:
+                if descriptor is not None:
+                    try:
+                        self._file_lock.release(descriptor)
+                    except Exception:
+                        logger.warning("runtime event log unlock failed", exc_info=True)
 
     def close(self) -> None:
-        """Close the log file. This does not touch Ling business state."""
+        """Release nothing held past a write. Repeated calls do not raise."""
 
-        with self._lock:
-            handle = self._handle
-            self._handle = None
-        if handle is None:
-            return
         try:
-            handle.close()
+            with self._thread_lock:
+                return
         except Exception:
             logger.warning("runtime event log close failed", exc_info=True)
-
-    def _open(self):
-        handle = self._handle
-        if handle is not None:
-            return handle
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        opened = self._path.open("a", encoding="utf-8", newline="\n")
-        self._handle = opened
-        return opened

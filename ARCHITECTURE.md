@@ -97,6 +97,7 @@ ling/
 │     │  │  ├─ repositories.py
 │     │  │  └─ unit_of_work.py
 │     │  ├─ observability/         # 可选 JSONL 运行事件；不参与业务
+│     │  │  ├─ file_lock.py        # 旁车锁，多进程追加一行
 │     │  │  └─ jsonl_sink.py
 │     │  ├─ coordinator/           # 可选观测投影；不参与本地治理
 │     │  │  ├─ async_observer.py   # 有上限的后台队列
@@ -179,7 +180,7 @@ SQLite 用 WAL。schema 版本记在 SQLite `user_version`，当前是 3。没�
 
 ## 6. MCP 边界
 
-MCP 只是入站适配器。每个工具只做参数解析、身份提取、调用 application 用例和错误映射，不包含权限判断、SQL 或 HTTP 调用。本地结果确定之后，server 先生成并写入 RuntimeEvent，再把成功且非重放的调用交给可选的 `RuntimeObserver`。Coordinator 失败不能改掉已经写下的事件，也不能改 MCP 返回。两条观测互不替代。RuntimeEvent 记录工具名、结果摘要和耗时，不记录业务正文，也不是 operation receipt。`LING_EVENT_LOG` 未设置时不创建日志文件。事件写失败只留在 stderr，不能改写本地结果，也不能把成功变成 `internal`。当前没有 Ling 内置 GUI。
+MCP 只是入站适配器。每个工具只做参数解析、身份提取、调用 application 用例和错误映射，不包含权限判断、SQL 或 HTTP 调用。本地结果确定之后，server 先生成并写入 RuntimeEvent，再把成功且非重放的调用交给可选的 `RuntimeObserver`。Coordinator 失败不能改掉已经写下的事件，也不能改 MCP 返回。两条观测互不替代。RuntimeEvent 记录工具名、结果摘要和耗时，不记录业务正文，也不是 operation receipt，也不是业务状态。多个 Ling 进程可以共享同一个 JSONL 文件；`<LING_EVENT_LOG>.lock` 保证一次只写完整的一行。`LING_EVENT_LOG` 未设置时不创建日志文件，也不创建锁文件。事件写失败或加锁失败只留在 stderr，不能改写本地结果，也不能把成功变成 `internal`。日志轮转当前尚未实现。当前没有 Ling 内置 GUI。
 
 Coordinator 观测进入 infrastructure 的后台队列后立即返回，不等待 HTTP。失败结果、未知工具、dashboard 和 operation replay 不进入该队列。队列满或投影失败只留在 stderr。Coordinator GUI 仍是独立的可选外部页面，不是 Ling 内置界面。
 

@@ -1,4 +1,4 @@
-"""Optional local runtime-event log. Ling does not require this file."""
+"""Optional local runtime-event log. Several Ling processes may share one file."""
 
 from __future__ import annotations
 
