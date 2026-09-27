@@ -20,6 +20,7 @@ from ling.interfaces.mcp.adapter import ToolDeps, gate_attachment, redact_argume
 from ling.interfaces.mcp.schemas import (
     TOOL_OUTPUT_SCHEMA,
     AbandonClaimInput,
+    AcquireControllerLeaseInput,
     AcquireFileLockInput,
     AttachInput,
     ClaimInput,
@@ -28,7 +29,10 @@ from ling.interfaces.mcp.schemas import (
     DetachInput,
     DispatchInput,
     HeartbeatInput,
+    ProvisionSlotInput,
     RegisterSlotInput,
+    ReleaseControllerLeaseInput,
+    RenewControllerLeaseInput,
     ReviewInput,
     SubmitInput,
 )
@@ -41,7 +45,11 @@ from ling.interfaces.mcp.tools.dashboard import handle as dashboard
 from ling.interfaces.mcp.tools.detach import handle as detach
 from ling.interfaces.mcp.tools.dispatch import handle as dispatch
 from ling.interfaces.mcp.tools.heartbeat import handle as heartbeat
+from ling.interfaces.mcp.tools.acquire_controller_lease import handle as acquire_controller_lease
+from ling.interfaces.mcp.tools.provision_slot import handle as provision_slot
 from ling.interfaces.mcp.tools.register_slot import handle as register_slot
+from ling.interfaces.mcp.tools.release_controller_lease import handle as release_controller_lease
+from ling.interfaces.mcp.tools.renew_controller_lease import handle as renew_controller_lease
 from ling.interfaces.mcp.tools.review import handle as review
 from ling.interfaces.mcp.tools.submit import handle as submit
 
@@ -131,6 +139,30 @@ _TOOLS: tuple[_Tool, ...] = (
         DashboardInput,
         dashboard,
     ),
+    _Tool(
+        "ling_acquire_controller_lease",
+        "Acquire the single controller lease for the attached commander session.",
+        AcquireControllerLeaseInput,
+        acquire_controller_lease,
+    ),
+    _Tool(
+        "ling_renew_controller_lease",
+        "Extend the controller lease held by the attached commander session.",
+        RenewControllerLeaseInput,
+        renew_controller_lease,
+    ),
+    _Tool(
+        "ling_release_controller_lease",
+        "Release the controller lease held by the attached commander session.",
+        ReleaseControllerLeaseInput,
+        release_controller_lease,
+    ),
+    _Tool(
+        "ling_provision_slot",
+        "Provision or rotate another slot credential while holding the controller lease.",
+        ProvisionSlotInput,
+        provision_slot,
+    ),
 )
 
 _TOOLS_BY_NAME = {tool.name: tool for tool in _TOOLS}
@@ -146,7 +178,9 @@ def build_server(deps: ToolDeps) -> Server:
             "Local task and permission kernel. The caller connects to this server. "
             "This server does not start an agent or choose a model. "
             "ling_register_slot, ling_attach, and ling_detach work before a session "
-            "is attached. Other tools use the attached slot."
+            "is attached. Other tools use the attached slot. "
+            "Only the attached codex-commander session can hold the controller lease "
+            "and provision slot credentials."
         ),
     )
     @server.list_tools()

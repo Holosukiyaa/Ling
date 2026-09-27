@@ -153,7 +153,7 @@ mentor 消费     consumed     不再可消费
 
 | 用例 | 调用者 | 主要动作 |
 | --- | --- | --- |
-| `register_slot` | 任意已连接的客户端 | 校验模板。新槽位同时保存 attachment token 的 SHA-256。没有凭据的旧槽位在模板相同时 provision 一次；已有凭据或模板不同返回 `conflict` |
+| `register_slot` | 未接驳的一次性启动 | 只为还没有凭据的 `codex-commander`（模板 `mentor`）保存一次 SHA-256。这样第一份总控凭据不依赖租约。其他槽位返回 `forbidden`，不写入。指挥官已有凭据或模板不同返回 `conflict` |
 | `attach` | 当前 MCP 进程 | 校验 token 摘要，创建会过期的 session，并绑定这个 stdio 进程。失败一律是 `attachment_rejected` |
 | `detach` | 当前 MCP 进程 | 撤销当前 session 并清除绑定。重复调用成功。不通知 Coordinator |
 | `heartbeat` | 已接驳槽位 | 把 session 对应的槽位标为在线，并写入最近心跳时间 |
@@ -164,7 +164,11 @@ mentor 消费     consumed     不再可消费
 | `review` | checker | 从队列 3 取票，产生 accepted/rejected 结论并放入队列 2 |
 | `consume` | 原 mentor | 只能消费自己发出的 ticket id；消费后释放消费锁和该票的文件锁 |
 | `acquire_file_lock` | 已领取票的 worker | 在 Ling 本地记录 ticket、持有槽位和路径；冲突路径不能被另一张票占用 |
-| `dashboard` | 已接驳客户端 | 返回 Ling 自己的槽位、票据、队列、锁和心跳，不改状态。这一版不按槽位过滤 |
+| `acquire_controller_lease` | 已接驳的 `codex-commander` | 取得唯一总控租约并绑定当前 session。未过期的其他 session 得到 `conflict`。过期、已释放或 session 已撤销时在同一写事务里接管 |
+| `renew_controller_lease` | 当前租约的 session | 按配置的 TTL 延长自己的租约。没有可用租约时返回 `lease_required`，不改记录 |
+| `release_controller_lease` | 当前租约的 session | 释放自己的租约。没有可用租约时返回 `lease_required` |
+| `provision_slot` | 持有有效租约的 `codex-commander` | 为槽位创建或轮换凭据，只保存 SHA-256。worker、checker 和其他槽位得到 `forbidden`；没有租约得到 `lease_required` |
+| `dashboard` | 已接驳客户端 | 返回 Ling 自己的槽位、票据、队列、锁和心跳，不改状态。这一版仍不按槽位过滤，也不做总控专用投影 |
 
 每个命令遵循同一顺序：
 
@@ -174,11 +178,11 @@ mentor 消费     consumed     不再可消费
 
 `dashboard` 只读取这些记录，不提交。
 
-SQLite 用 WAL。schema 版本记在 SQLite `user_version`，当前是 5。没有版本标记的现有库会升到当前版本，已有的槽位、票据、锁和心跳都保留。版本 2 增加 `operation_receipts`，版本 3 为 `created_at` 增加索引，版本 4 为票据增加可空列 `target_slot_id`，旧票为 NULL。版本 5 增加 `slot_credentials` 和 `attachment_sessions`。旧槽位没有凭据行，直到被 provision。凭据列只保存 SHA-256 十六进制摘要，不保存原始 attachment token。高于当前版本的库拒绝打开，不会静默降级。迁移在一个事务里完成，失败则整段回滚。读到第一次 `get` 时开启 `BEGIN IMMEDIATE`，把同一次用例里的读取和写入放进同一个写事务，避免两个领取同时成功。领取、消费和派发仍靠领域检查；槽位、票据和路径另有唯一约束，重复插入不会静默覆盖。
+SQLite 用 WAL。schema 版本记在 SQLite `user_version`，当前是 6。没有版本标记的现有库会升到当前版本，已有的槽位、票据、锁和心跳都保留。版本 2 增加 `operation_receipts`，版本 3 为 `created_at` 增加索引，版本 4 为票据增加可空列 `target_slot_id`，旧票为 NULL。版本 5 增加 `slot_credentials` 和 `attachment_sessions`。旧槽位没有凭据行，直到被 provision。凭据列只保存 SHA-256 十六进制摘要，不保存原始 attachment token。版本 6 增加 `controller_leases`。同一时刻最多一行 `active_key = 1`，取得和接管都在 `BEGIN IMMEDIATE` 里完成。高于当前版本的库拒绝打开，不会静默降级。迁移在一个事务里完成，失败则整段回滚。读到第一次 `get` 时开启 `BEGIN IMMEDIATE`，把同一次用例里的读取和写入放进同一个写事务，避免两个领取或两份租约同时成功。领取、消费和派发仍靠领域检查；槽位、票据、路径和有效租约另有唯一约束，重复插入不会静默覆盖。
 
-接驳 session 不是 domain 实体。domain 不保存 token、摘要或 MCP 连接。application 通过端口保存摘要和 session，SQLite 实现这些端口。`LING_ATTACHMENT_TTL_SECONDS` 是正整数秒数，默认 3600；非法值使用默认值。session 过期或撤销后不能再充当调用者。进程关闭时撤销自己的 session，不向 stdout 写内容。attach 和 detach 不写 operation receipt，也不进入 Coordinator 队列。
+接驳 session 不是 domain 实体。domain 不保存 token、摘要、租约或 MCP 连接。application 通过端口保存摘要、session 和总控租约，SQLite 实现这些端口。`LING_ATTACHMENT_TTL_SECONDS` 和 `LING_CONTROLLER_LEASE_TTL_SECONDS` 都是正整数秒数，默认 3600；空值或非法值使用默认值，并在 stderr 记一条警告。session 过期或撤销后不能再充当调用者。进程关闭或 detach 时撤销自己的 session，并释放绑定在该 session 上的租约，不向 stdout 写内容。重新 attach 替换旧 session 时，旧 session 上的租约一并释放。attach 和 detach 不写 operation receipt，也不进入 Coordinator 队列。
 
-九个修改型命令可以接收调用方的 `operation_id`。不提供时仍由 Ling 生成。成功提交时，回执和这次业务写入在同一个 commit 里落盘。之后用同一个 `operation_id`、同一个工具和同一组规范化参数重试，会返回第一次的成功结果，不再次执行状态转换，也不再次通知可选的 Coordinator 观测。工具或参数不同则返回 `conflict`。`invalid_input`、`not_found`、`forbidden`、领域拒绝和 `internal` 不写回执。`dashboard` 没有 `operation_id` 输入。
+修改型命令可以接收调用方的 `operation_id`，包括总控租约的取得、续期、释放和凭据发放。不提供时仍由 Ling 生成。成功提交时，回执和这次业务写入在同一个 commit 里落盘。之后用同一个 `operation_id`、同一个工具和同一组规范化参数重试，会返回第一次的成功结果，不再次执行状态转换，也不再次通知可选的 Coordinator 观测。工具或参数不同则返回 `conflict`。`invalid_input`、`not_found`、`forbidden`、`lease_required`、领域拒绝和 `internal` 不写回执。`dashboard` 没有 `operation_id` 输入。回执和观测里最多出现 token 的 SHA-256，不出现原始 attachment token。
 
 `operation_receipts` 不属于 domain，默认永久保留。部署者用 `python -m ling.maintenance --database PATH --before ISO_TIMESTAMP` 显式删除 `created_at` 早于 cutoff 的回执。这个命令不启动 MCP，不产生 Coordinator 观测，也不在服务启动时自动运行。清理是单独的事务，只删除回执；槽位、票据、锁和业务状态保持原样。被删掉的 `operation_id` 之后不再保证能重放。
 
@@ -188,7 +192,7 @@ MCP 只是入站适配器。每个工具只做参数解析、身份提取、调�
 
 配置 `LING_COORDINATOR_URL`、可选的 `LING_COORDINATOR_API_KEY` 和 `LING_COORDINATOR_WORKSPACE` 之后，成功且非重放的注册、心跳、派发、领取、提交、审核和消费会投影到已有的 Agent Coordinator。部署者单独打开 `http://localhost:9889/dashboard`。失败调用、重放调用、dashboard 查询、attach 和 detach 不进入该队列。注册投影不包含原始 attachment token。队列满或投影失败只留在 stderr。Coordinator GUI 是外部可选观测界面，不是 Ling 内置界面。
 
-除注册、attach 和 detach 以外，工具调用都先要求当前 stdio 进程已经 attach。未接驳返回 `attachment_required`，并且不会进入用例，也不会通知 Coordinator。调用者身份只来自该 session。请求若带上不同的 `slot_id`、`issuer_slot_id` 或 `actor_slot_id`，返回 `forbidden`。省略时由 session 补上。`target_slot_id` 仍然只约束票据可以被谁领取。这一版不实现总控租约，也不按 worker 过滤 `tools/list` 或 dashboard。
+除注册、attach 和 detach 以外，工具调用都先要求当前 stdio 进程已经 attach。未接驳返回 `attachment_required`，并且不会进入用例，也不会通知 Coordinator。调用者身份只来自该 session。请求若带上不同的 `slot_id`、`issuer_slot_id` 或 `actor_slot_id`，返回 `forbidden`。省略时由 session 补上。`target_slot_id` 仍然只约束票据可以被谁领取。总控租约只发给已接驳的 `codex-commander`。worker、checker、其他槽位和伪造的 actor 得到 `forbidden`，不改租约。已接驳的指挥官没有可用租约时，续期、释放和凭据发放得到 `lease_required`。`tools/list` 和 dashboard 仍不对 worker 过滤，也没有总控专用投影。Coordinator 不新增端点；租约和凭据发放的成功结果仍走原有可选观测入口，投影列表不变。
 
 当前工具可以稳定为：
 
@@ -205,6 +209,10 @@ ling_review
 ling_consume
 ling_acquire_file_lock
 ling_dashboard
+ling_acquire_controller_lease
+ling_renew_controller_lease
+ling_release_controller_lease
+ling_provision_slot
 ```
 
 工具返回统一的结构化结果：`ok`、`operation_id`、`ticket_id`、`state`、`queue`、`error_code` 和可读消息。缺字段、类型错误和空字符串是 `invalid_input`。权限和状态机错误沿用用例的错误码，例如 `forbidden`、`invalid_transition`、`already_claimed`、`not_found`、`conflict`。未预期的失败是 `internal`，客户端只看到这句说明，堆栈留在 stderr。

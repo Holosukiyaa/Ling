@@ -16,3 +16,6 @@ class IdGenerator(Protocol):
 
     def new_session_id(self) -> str:
         """Return a new opaque attachment session id."""
+
+    def new_lease_id(self) -> str:
+        """Return a new opaque controller lease id."""

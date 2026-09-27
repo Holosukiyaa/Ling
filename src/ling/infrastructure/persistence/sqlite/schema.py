@@ -12,9 +12,9 @@ operation receipts. Version 3 indexes `created_at` for the explicit
 maintenance purge. Version 4 adds nullable `tickets.target_slot_id`; existing
 rows stay NULL. Version 5 adds `slot_credentials` and `attachment_sessions`.
 Existing slot rows stay, with no credential until one is provisioned. The
-credential table stores a SHA-256 hash, never an attachment token. A newer
-`user_version` is refused. Each upgrade runs in one transaction and rolls
-back when it fails.
+credential table stores a SHA-256 hash, never an attachment token. Version 6
+adds `controller_leases` and a unique active holder. A newer `user_version`
+is refused. Each upgrade runs in one transaction and rolls back when it fails.
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ import sqlite3
 
 from ling.infrastructure.persistence.sqlite.errors import StorageError
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 _VERSION_1_STATEMENTS = (
     """
@@ -150,12 +150,39 @@ def _upgrade_to_5(connection: sqlite3.Connection) -> None:
     _execute_all(connection, _VERSION_5_STATEMENTS)
 
 
+_VERSION_6_STATEMENTS = (
+    """
+    CREATE TABLE IF NOT EXISTS controller_leases (
+        lease_id TEXT PRIMARY KEY,
+        slot_id TEXT NOT NULL REFERENCES slots(slot_id),
+        session_id TEXT NOT NULL REFERENCES attachment_sessions(session_id),
+        acquired_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        released_at TEXT,
+        active_key INTEGER,
+        CHECK (active_key IS NULL OR active_key = 1),
+        CHECK (released_at IS NULL OR active_key IS NULL)
+    )
+    """,
+    """
+    CREATE UNIQUE INDEX IF NOT EXISTS controller_leases_one_active
+        ON controller_leases (active_key)
+        WHERE active_key = 1
+    """,
+)
+
+
+def _upgrade_to_6(connection: sqlite3.Connection) -> None:
+    _execute_all(connection, _VERSION_6_STATEMENTS)
+
+
 _UPGRADES = {
     1: _upgrade_to_1,
     2: _upgrade_to_2,
     3: _upgrade_to_3,
     4: _upgrade_to_4,
     5: _upgrade_to_5,
+    6: _upgrade_to_6,
 }
 
 

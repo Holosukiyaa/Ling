@@ -18,6 +18,7 @@ LOCK_MISMATCH = "lock_mismatch"
 INVALID_INPUT = "invalid_input"
 ATTACHMENT_REQUIRED = "attachment_required"
 ATTACHMENT_REJECTED = "attachment_rejected"
+LEASE_REQUIRED = "lease_required"
 
 
 @dataclass(frozen=True, slots=True)
@@ -353,3 +354,106 @@ class DetachResult:
     occurred_at: datetime
     error_code: str | None = None
     message: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class AcquireControllerLeaseCommand:
+    """Take the single controller lease for the attached commander session."""
+
+    actor_slot_id: str
+    session_id: str
+    ttl_seconds: int
+    operation_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class AcquireControllerLeaseResult:
+    """Active lease, or a refusal that left the current holder unchanged."""
+
+    ok: bool
+    operation_id: str
+    occurred_at: datetime
+    lease_id: str | None = None
+    slot_id: str | None = None
+    session_id: str | None = None
+    expires_at: datetime | None = None
+    error_code: str | None = None
+    message: str = ""
+    replay: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class RenewControllerLeaseCommand:
+    """Extend the lease held by this commander session."""
+
+    actor_slot_id: str
+    session_id: str
+    ttl_seconds: int
+    operation_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class RenewControllerLeaseResult:
+    """Renewed lease, or a refusal that did not change its expiry."""
+
+    ok: bool
+    operation_id: str
+    occurred_at: datetime
+    lease_id: str | None = None
+    slot_id: str | None = None
+    session_id: str | None = None
+    expires_at: datetime | None = None
+    error_code: str | None = None
+    message: str = ""
+    replay: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class ReleaseControllerLeaseCommand:
+    """Release the lease held by this commander session."""
+
+    actor_slot_id: str
+    session_id: str
+    operation_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ReleaseControllerLeaseResult:
+    """Released lease, or a refusal that left the holder in place."""
+
+    ok: bool
+    operation_id: str
+    occurred_at: datetime
+    lease_id: str | None = None
+    slot_id: str | None = None
+    session_id: str | None = None
+    expires_at: datetime | None = None
+    error_code: str | None = None
+    message: str = ""
+    replay: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class ProvisionSlotCommand:
+    """Create or rotate one slot credential. The raw token is not on this command."""
+
+    actor_slot_id: str
+    session_id: str
+    slot_id: str
+    template_id: str
+    token_hash: str
+    operation_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ProvisionSlotResult:
+    """Credential written for a slot, or a refusal that did not change it."""
+
+    ok: bool
+    operation_id: str
+    occurred_at: datetime
+    slot_id: str | None = None
+    template_id: str | None = None
+    error_code: str | None = None
+    message: str = ""
+    replay: bool = False

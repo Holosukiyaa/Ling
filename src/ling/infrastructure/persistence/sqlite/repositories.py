@@ -7,6 +7,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 
 from ling.application.ports.attachments import AttachmentSession, SlotCredential
+from ling.application.ports.leases import ControllerLease, ControllerLeaseHeld
 from ling.application.ports.operation_receipts import OperationReceipt, OperationReceiptTaken
 from ling.domain.agents.entities import Slot, template_catalog
 from ling.domain.agents.values import SlotId, TemplateId
@@ -270,6 +271,56 @@ class SqliteAttachmentSessionRepository:
         self._uow.stage("attachment_session", session.session_id, session)
 
 
+class SqliteControllerLeaseRepository:
+    """Stage the single active controller lease and its released history."""
+
+    def __init__(self, unit_of_work: SqliteUnitOfWork) -> None:
+        self._uow = unit_of_work
+
+    def get(self, lease_id: str) -> ControllerLease | None:
+        self._uow.begin_for_read()
+        staged = self._uow.staged("controller_lease", lease_id)
+        if isinstance(staged, ControllerLease):
+            return staged
+        row = self._uow._connection().execute(
+            """
+            SELECT lease_id, slot_id, session_id, acquired_at, expires_at, released_at, active_key
+            FROM controller_leases WHERE lease_id = ?
+            """,
+            (lease_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        self._uow.note_loaded("controller_lease", lease_id)
+        return _lease_from_row(row)
+
+    def get_active(self) -> ControllerLease | None:
+        self._uow.begin_for_read()
+        seen: set[str] = set()
+        for key, item in reversed(_staged(self._uow, "controller_lease")):
+            if not isinstance(item, ControllerLease) or key in seen:
+                continue
+            seen.add(key)
+            if item.active and item.released_at is None:
+                return item
+        row = self._uow._connection().execute(
+            """
+            SELECT lease_id, slot_id, session_id, acquired_at, expires_at, released_at, active_key
+            FROM controller_leases WHERE active_key = 1
+            """
+        ).fetchone()
+        if row is None:
+            return None
+        lease_id = str(row["lease_id"])
+        if lease_id in seen:
+            return None
+        self._uow.note_loaded("controller_lease", lease_id)
+        return _lease_from_row(row)
+
+    def save(self, lease: ControllerLease) -> None:
+        self._uow.stage("controller_lease", lease.lease_id, lease)
+
+
 def _receipt_from_row(row: sqlite3.Row) -> OperationReceipt:
     created_at = row["created_at"]
     if not isinstance(created_at, str):
@@ -339,6 +390,11 @@ def insert_aggregate(connection: sqlite3.Connection, kind: str, item: object) ->
                 raise StorageError("attachment session save received the wrong record")
             _insert_session(connection, item)
             return
+        if kind == "controller_lease":
+            if not isinstance(item, ControllerLease):
+                raise StorageError("controller lease save received the wrong record")
+            _insert_lease(connection, item)
+            return
         if not isinstance(item, ConsumptionLock):
             raise StorageError("consumption lock save received the wrong aggregate")
         connection.execute(
@@ -406,6 +462,11 @@ def update_aggregate(connection: sqlite3.Connection, kind: str, item: object) ->
             if not isinstance(item, AttachmentSession):
                 raise StorageError("attachment session save received the wrong record")
             _update_session(connection, item)
+            return
+        if kind == "controller_lease":
+            if not isinstance(item, ControllerLease):
+                raise StorageError("controller lease save received the wrong record")
+            _update_lease(connection, item)
             return
         else:
             if not isinstance(item, ConsumptionLock):
@@ -593,6 +654,81 @@ def _update_session(connection: sqlite3.Connection, session: AttachmentSession) 
     )
 
 
+def _lease_from_row(row: sqlite3.Row) -> ControllerLease:
+    lease_id = str(row["lease_id"])
+    released = row["released_at"]
+    return ControllerLease(
+        lease_id=lease_id,
+        slot_id=str(row["slot_id"]),
+        session_id=str(row["session_id"]),
+        acquired_at=_aware_time(f"controller lease {lease_id}", row["acquired_at"]),
+        expires_at=_aware_time(f"controller lease {lease_id}", row["expires_at"]),
+        released_at=None
+        if released is None
+        else _aware_time(f"controller lease {lease_id}", released),
+        active=row["active_key"] == 1,
+    )
+
+
+def _lease_values(
+    lease: ControllerLease,
+) -> tuple[str, str, str, str, str, str | None, int | None]:
+    return (
+        lease.lease_id,
+        lease.slot_id,
+        lease.session_id,
+        lease.acquired_at.isoformat(),
+        lease.expires_at.isoformat(),
+        None if lease.released_at is None else lease.released_at.isoformat(),
+        1 if lease.active and lease.released_at is None else None,
+    )
+
+
+def _insert_lease(connection: sqlite3.Connection, lease: ControllerLease) -> None:
+    try:
+        connection.execute(
+            """
+            INSERT INTO controller_leases (
+                lease_id, slot_id, session_id, acquired_at, expires_at, released_at, active_key
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            _lease_values(lease),
+        )
+    except sqlite3.IntegrityError as exc:
+        _raise_lease_conflict(lease.lease_id, exc)
+
+
+def _update_lease(connection: sqlite3.Connection, lease: ControllerLease) -> None:
+    values = _lease_values(lease)
+    try:
+        cursor = connection.execute(
+            """
+            UPDATE controller_leases
+            SET slot_id = ?, session_id = ?, acquired_at = ?, expires_at = ?,
+                released_at = ?, active_key = ?
+            WHERE lease_id = ?
+            """,
+            (values[1], values[2], values[3], values[4], values[5], values[6], values[0]),
+        )
+    except sqlite3.IntegrityError as exc:
+        _raise_lease_conflict(lease.lease_id, exc)
+        return
+    _require_update(
+        connection,
+        cursor,
+        "controller_lease",
+        lease.lease_id,
+        "SELECT 1 FROM controller_leases WHERE lease_id = ?",
+    )
+
+
+def _raise_lease_conflict(lease_id: str, exc: sqlite3.IntegrityError) -> None:
+    text = str(exc).lower()
+    if "unique" in text or "primary key" in text:
+        raise ControllerLeaseHeld(lease_id) from exc
+    raise exc
+
+
 def _session_values(
     session: AttachmentSession,
 ) -> tuple[str, str, str, str, str | None]:
@@ -748,6 +884,8 @@ def _identity(kind: str, item: object) -> str:
         return item.slot_id
     if isinstance(item, AttachmentSession):
         return item.session_id
+    if isinstance(item, ControllerLease):
+        return item.lease_id
     return kind
 
 
@@ -760,6 +898,8 @@ def _label(kind: str) -> str:
         return "slot credential"
     if kind == "attachment_session":
         return "attachment session"
+    if kind == "controller_lease":
+        return "controller lease"
     return kind
 
 

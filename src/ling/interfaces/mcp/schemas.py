@@ -85,6 +85,25 @@ class DashboardInput(_Input):
     """Dashboard takes no arguments."""
 
 
+class AcquireControllerLeaseInput(_Mutating):
+    actor_slot_id: str | None = Field(default=None, min_length=1)
+
+
+class RenewControllerLeaseInput(_Mutating):
+    actor_slot_id: str | None = Field(default=None, min_length=1)
+
+
+class ReleaseControllerLeaseInput(_Mutating):
+    actor_slot_id: str | None = Field(default=None, min_length=1)
+
+
+class ProvisionSlotInput(_Mutating):
+    actor_slot_id: str | None = Field(default=None, min_length=1)
+    slot_id: str = Field(min_length=1)
+    template_id: str = Field(min_length=1)
+    attachment_token: str = Field(min_length=16)
+
+
 class ToolOutput(BaseModel):
     """Fields every tool result must carry. Extra keys are allowed."""
 

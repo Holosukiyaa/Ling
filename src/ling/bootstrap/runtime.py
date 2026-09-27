@@ -25,8 +25,12 @@ class UuidIdGenerator:
     def new_session_id(self) -> str:
         return uuid4().hex
 
+    def new_lease_id(self) -> str:
+        return uuid4().hex
+
 
 DEFAULT_ATTACHMENT_TTL_SECONDS = 3600
+DEFAULT_CONTROLLER_LEASE_TTL_SECONDS = 3600
 
 
 def attachment_ttl_seconds(raw: object) -> int:
@@ -41,6 +45,25 @@ def attachment_ttl_seconds(raw: object) -> int:
 def attachment_ttl_rejected(raw: object) -> bool:
     """True when a non-empty setting is not a positive integer."""
 
+    return _rejected_positive(raw)
+
+
+def controller_lease_ttl_seconds(raw: object) -> int:
+    """Return a positive controller-lease TTL. Blank or illegal values use the default."""
+
+    parsed = _positive_int(raw)
+    if parsed is None:
+        return DEFAULT_CONTROLLER_LEASE_TTL_SECONDS
+    return parsed
+
+
+def controller_lease_ttl_rejected(raw: object) -> bool:
+    """True when a non-empty controller-lease TTL is not a positive integer."""
+
+    return _rejected_positive(raw)
+
+
+def _rejected_positive(raw: object) -> bool:
     if raw is None:
         return False
     text = str(raw).strip()

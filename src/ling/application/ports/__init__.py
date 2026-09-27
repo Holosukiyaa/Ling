@@ -8,6 +8,11 @@ from ling.application.ports.attachments import (
 )
 from ling.application.ports.clock import Clock
 from ling.application.ports.id_generator import IdGenerator
+from ling.application.ports.leases import (
+    ControllerLease,
+    ControllerLeaseHeld,
+    ControllerLeaseRepository,
+)
 from ling.application.ports.observability import (
     RUNTIME_EVENT_SCHEMA,
     NullRuntimeEventSink,
@@ -28,6 +33,9 @@ __all__ = [
     "AttachmentSessionRepository",
     "Clock",
     "ConsumptionLockRepository",
+    "ControllerLease",
+    "ControllerLeaseHeld",
+    "ControllerLeaseRepository",
     "FileLockRepository",
     "IdGenerator",
     "NullRuntimeEventSink",

@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 
 from ling.application.attachments import is_token_hash
 from ling.application.commands.support import load_slot, parse_slot_id
+from ling.application.controller_lease import release_lease_for_session
 from ling.application.dto import ATTACHMENT_REJECTED, AttachCommand, AttachResult
 from ling.application.ports.attachments import AttachmentSession
 from ling.application.ports.clock import Clock
@@ -64,6 +65,7 @@ def execute(
         previous = uow.attachment_sessions.get(previous_id)
         if previous is not None and previous.revoked_at is None:
             uow.attachment_sessions.save(previous.revoke(occurred_at))
+            release_lease_for_session(uow, previous.session_id, occurred_at)
     uow.commit()
     return AttachResult(
         ok=True,

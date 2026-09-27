@@ -13,6 +13,8 @@ from ling.bootstrap.runtime import (
     UuidIdGenerator,
     attachment_ttl_rejected,
     attachment_ttl_seconds,
+    controller_lease_ttl_rejected,
+    controller_lease_ttl_seconds,
 )
 from ling.infrastructure.coordinator import observer_from_environ
 from ling.infrastructure.observability import sink_from_environ
@@ -40,6 +42,13 @@ def serve(database_path: str | Path) -> None:
             "LING_ATTACHMENT_TTL_SECONDS is not a positive integer; using %s",
             ttl,
         )
+    raw_lease_ttl = os.environ.get("LING_CONTROLLER_LEASE_TTL_SECONDS")
+    lease_ttl = controller_lease_ttl_seconds(raw_lease_ttl)
+    if controller_lease_ttl_rejected(raw_lease_ttl):
+        logging.getLogger(__name__).warning(
+            "LING_CONTROLLER_LEASE_TTL_SECONDS is not a positive integer; using %s",
+            lease_ttl,
+        )
     deps = ToolDeps(
         open_unit_of_work=database.unit_of_work,
         ids=UuidIdGenerator(),
@@ -47,6 +56,7 @@ def serve(database_path: str | Path) -> None:
         observer=observer,
         event_sink=event_sink,
         attachment_ttl_seconds=ttl,
+        controller_lease_ttl_seconds=lease_ttl,
     )
     server = build_server(deps)
     try:

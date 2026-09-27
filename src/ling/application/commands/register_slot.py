@@ -12,7 +12,8 @@ from ling.application.commands.support import (
     parse_template_id,
     prepare_operation,
 )
-from ling.application.dto import CONFLICT, INVALID_INPUT, RegisterSlotCommand, RegisterSlotResult
+from ling.application.controller_lease import CONTROLLER_SLOT_ID
+from ling.application.dto import CONFLICT, FORBIDDEN, INVALID_INPUT, RegisterSlotCommand, RegisterSlotResult
 from ling.application.ports.attachments import SlotCredential
 from ling.application.ports.clock import Clock
 from ling.application.ports.id_generator import IdGenerator
@@ -27,8 +28,24 @@ def execute(
     ids: IdGenerator,
     clock: Clock,
 ) -> RegisterSlotResult:
-    """Validate the template and save the slot. No external registration is required."""
+    """Bootstrap only the uncredentialed commander. Other credentials stay administrator-controlled."""
 
+    if _rejects_unmanaged_credential(command):
+        occurred_at = clock.now()
+        operation_id = (
+            command.operation_id.strip()
+            if isinstance(command.operation_id, str) and command.operation_id.strip()
+            else ids.new_operation_id()
+        )
+        uow.rollback()
+        return RegisterSlotResult(
+            ok=False,
+            operation_id=operation_id,
+            occurred_at=occurred_at,
+            slot_id=command.slot_id.strip() if isinstance(command.slot_id, str) else None,
+            error_code=FORBIDDEN,
+            message="attachment credentials are administrator-controlled",
+        )
     prepared = prepare_operation(
         uow,
         ids,
@@ -122,3 +139,13 @@ def execute(
         error_code=CONFLICT,
         message="operation id was already used for a different request",
     )
+
+
+def _rejects_unmanaged_credential(command: RegisterSlotCommand) -> bool:
+    """True when this call is not the one-time codex-commander bootstrap."""
+
+    slot = command.slot_id.strip() if isinstance(command.slot_id, str) else ""
+    template = command.template_id.strip() if isinstance(command.template_id, str) else ""
+    if not slot or not template:
+        return False
+    return slot != CONTROLLER_SLOT_ID or template != "mentor"

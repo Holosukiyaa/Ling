@@ -10,13 +10,15 @@ python -m ling --database PATH
 
 `LING_DATABASE` 可以代替 `--database`。协议输出只走 stdout，提示和日志走 stderr。
 
-SQLite schema 版本是 5，记在 `user_version`。没有版本标记的旧文件会升到当前版本，并保留已有数据。版本 2 会补上成功操作回执表，版本 3 给回执的创建时间加索引，版本 4 给票据增加可空的 `target_slot_id`，旧票保持 NULL。版本 5 增加 `slot_credentials` 和 `attachment_sessions`。已有槽位保留，但没有凭据，直到用相同模板 provision 一次。比 5 更新的文件会拒绝打开。迁移在一个事务里完成，失败则整段回滚。派发可以省略 `target_slot_id`，这时仍按目标模板进入队列。带上它时，该槽位必须已经注册，且模板与 `target_template_id` 相同；对不上返回 `invalid_input`，槽位不存在返回 `not_found`。离线槽位也可以接票。绑定了目标槽位的票只能由那个槽位领取，其他 worker 得到 `forbidden`，票据状态不变。
+SQLite schema 版本是 6，记在 `user_version`。没有版本标记的旧文件会升到当前版本，并保留已有数据。版本 2 会补上成功操作回执表，版本 3 给回执的创建时间加索引，版本 4 给票据增加可空的 `target_slot_id`，旧票保持 NULL。版本 5 增加 `slot_credentials` 和 `attachment_sessions`。已有槽位保留，但没有凭据，直到被 provision。版本 6 增加 `controller_leases`，同时只允许一份有效租约。比 6 更新的文件会拒绝打开。迁移在一个事务里完成，失败则整段回滚。派发可以省略 `target_slot_id`，这时仍按目标模板进入队列。带上它时，该槽位必须已经注册，且模板与 `target_template_id` 相同；对不上返回 `invalid_input`，槽位不存在返回 `not_found`。离线槽位也可以接票。绑定了目标槽位的票只能由那个槽位领取，其他 worker 得到 `forbidden`，票据状态不变。
 
-`ling_register_slot` 必须带上至少 16 个字符的 `attachment_token`。新槽位会同时写入凭据。没有凭据的旧槽位可以在模板相同的情况下 provision 一次；模板不同或已经有凭据时返回 `conflict`。Ling 只保存该 token 的 SHA-256 十六进制摘要。原始 token 不会进入 SQLite、operation receipt、RuntimeEvent、Coordinator 观测或错误消息。回执指纹只纳入这个摘要，不纳入原始 token。
+`ling_register_slot` 是一次性启动路径，不是普通发证入口。它只接受还没有凭据的 `codex-commander`，模板必须是 `mentor`，并带上至少 16 个字符的 `attachment_token`。这样第一份总控凭据不必先持有租约。该槽位已有凭据时返回 `conflict`，不能用这条路径轮换。其他槽位返回 `forbidden`，不创建槽位，也不写凭据。worker 不能给自己发放或替换 attachment token。已接驳并持有有效总控租约的 `codex-commander` 用 `ling_provision_slot` 创建或轮换其他槽位的凭据；没有租约时返回 `lease_required`。Ling 只保存 token 的 SHA-256 十六进制摘要。原始 token 不会进入 SQLite、operation receipt、RuntimeEvent、Coordinator 观测、错误消息或工具结果。回执指纹只纳入这个摘要，不纳入原始 token。
 
-`ling_attach` 接收 `slot_id` 和 `attachment_token`，校验摘要后创建新的不透明 session，并绑定当前 MCP stdio 进程。过期时间由正整数环境变量 `LING_ATTACHMENT_TTL_SECONDS` 决定，默认 3600 秒；空值或非法值使用默认值，并在 stderr 记一条警告。槽位不存在、没有凭据、摘要不匹配、session 过期或已撤销都返回同一个 `attachment_rejected`，消息不说明是哪一种。`ling_detach` 撤销当前 session 并清除绑定，重复调用仍然成功。进程结束时撤销当前 session，且不向 stdout 写内容。attach 和 detach 不写 operation receipt，也不通知 Coordinator。
+`ling_attach` 接收 `slot_id` 和 `attachment_token`，校验摘要后创建新的不透明 session，并绑定当前 MCP stdio 进程。过期时间由正整数环境变量 `LING_ATTACHMENT_TTL_SECONDS` 决定，默认 3600 秒；空值或非法值使用默认值，并在 stderr 记一条警告。槽位不存在、没有凭据、摘要不匹配、session 过期或已撤销都返回同一个 `attachment_rejected`，消息不说明是哪一种。`ling_detach` 撤销当前 session 并清除绑定，重复调用仍然成功。进程结束或 detach 时撤销当前 session，并释放绑定在该 session 上的总控租约，且不向 stdout 写内容。同一次 attach 替换旧 session 时，旧 session 的租约也会释放。attach 和 detach 不写 operation receipt，也不通知 Coordinator。
 
-除 `ling_register_slot`、`ling_attach`、`ling_detach` 以外，现有工具都要求已接驳的 session。未接驳返回 `attachment_required`，此时不改业务状态，也不通知 Coordinator。heartbeat、dispatch、claim、abandon_claim、submit、review、consume、acquire_file_lock 和 dashboard 的槽位身份来自这个 session。请求里如果仍然带了 `slot_id`、`issuer_slot_id` 或 `actor_slot_id`，它必须等于绑定的槽位，否则返回 `forbidden`。省略这些字段时使用绑定槽位。`target_slot_id` 仍是票据目标，不是调用者身份。这一版里任意已接驳 session 都能看到完整 dashboard。总控租约、按槽位过滤工具和 dashboard 不在这一版。
+除 `ling_register_slot`、`ling_attach`、`ling_detach` 以外，现有工具都要求已接驳的 session。未接驳返回 `attachment_required`，此时不改业务状态，也不通知 Coordinator。heartbeat、dispatch、claim、abandon_claim、submit、review、consume、acquire_file_lock、dashboard、总控租约和 `ling_provision_slot` 的槽位身份来自这个 session。请求里如果仍然带了 `slot_id`、`issuer_slot_id` 或 `actor_slot_id`，它必须等于绑定的槽位，否则返回 `forbidden`。省略这些字段时使用绑定槽位。`target_slot_id` 仍是票据目标，不是调用者身份。任意已接驳 session 仍能看到完整 dashboard。这一版不按 worker 过滤工具或 dashboard，也不做总控专用投影。
+
+`ling_acquire_controller_lease`、`ling_renew_controller_lease` 和 `ling_release_controller_lease` 只接受已接驳的 `codex-commander`。worker、checker、其他槽位和伪造 actor 得到 `forbidden`，不改租约。租约绑定当前 MCP session，同一时间只有一份有效租约。TTL 由正整数 `LING_CONTROLLER_LEASE_TTL_SECONDS` 决定，默认 3600 秒；空值或非法值使用默认值，并在 stderr 记一条警告。未过期时其他 session 取得租约会得到 `conflict`。过期、已释放，或绑定的 session 已撤销时，下一次取得会在同一个写事务里接管。续期和释放只作用于当前 session 持有的未过期租约，否则返回 `lease_required`。这些调用使用和原来一样的 `operation_id` 重放与 `conflict` 规则。
 
 修改型工具可以带上 `operation_id`。不带时 Ling 仍会自己生成。同一个 `operation_id` 配上相同工具和相同参数，会原样返回第一次成功提交的结果，不会再次改状态。同一个 `operation_id` 配上不同工具或参数会返回 `conflict`。回执和本地状态在同一次提交里写入。只有成功提交的修改型操作会留下回执；失败不重放。`dashboard` 不接收 `operation_id`。回执默认永久保留，不属于 domain。部署者可以显式清理早于某个时刻的回执：
 
@@ -41,6 +43,7 @@ Agent Coordinator GUI 是外部可选观测界面。部署者单独启动已有�
 - `LING_EVENT_LOG_MAX_BYTES`：可选正整数；未设置时不轮转
 - `LING_EVENT_LOG_BACKUPS`：可选非负整数，默认 3
 - `LING_ATTACHMENT_TTL_SECONDS`：接驳 session 的正整数秒数，默认 3600；非法值使用默认值
+- `LING_CONTROLLER_LEASE_TTL_SECONDS`：总控租约的正整数秒数，默认 3600；非法值使用默认值
 
 依赖方向：
 

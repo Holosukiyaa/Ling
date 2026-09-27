@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
+from ling.application.controller_lease import release_lease_for_session
 from ling.application.dto import DetachCommand, DetachResult
 from ling.application.ports.clock import Clock
 from ling.application.ports.id_generator import IdGenerator
@@ -26,10 +27,22 @@ def execute(
         uow.rollback()
         return _ok(operation_id, occurred_at)
     session = uow.attachment_sessions.get(session_id)
-    if session is None or session.revoked_at is not None:
+    changed = False
+    if session is not None and session.revoked_at is None:
+        uow.attachment_sessions.save(session.revoke(occurred_at))
+        changed = True
+    active = uow.controller_leases.get_active()
+    if (
+        active is not None
+        and active.session_id == session_id
+        and active.active
+        and active.released_at is None
+    ):
+        release_lease_for_session(uow, session_id, occurred_at)
+        changed = True
+    if not changed:
         uow.rollback()
         return _ok(operation_id, occurred_at)
-    uow.attachment_sessions.save(session.revoke(occurred_at))
     uow.commit()
     return _ok(operation_id, occurred_at)
 

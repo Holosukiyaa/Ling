@@ -37,6 +37,10 @@ _BOUND_ACTOR = {
     "ling_review": "actor_slot_id",
     "ling_consume": "actor_slot_id",
     "ling_acquire_file_lock": "actor_slot_id",
+    "ling_acquire_controller_lease": "actor_slot_id",
+    "ling_renew_controller_lease": "actor_slot_id",
+    "ling_release_controller_lease": "actor_slot_id",
+    "ling_provision_slot": "actor_slot_id",
 }
 
 
@@ -71,6 +75,7 @@ class ToolDeps:
     event_sink: RuntimeEventSink = field(default_factory=NullRuntimeEventSink)
     attachment: AttachmentBinding = field(default_factory=AttachmentBinding)
     attachment_ttl_seconds: int = 3600
+    controller_lease_ttl_seconds: int = 3600
 
 
 def rejected(deps: ToolDeps, message: str, *, ticket_id: str | None = None) -> dict[str, Any]:
@@ -175,6 +180,7 @@ def payload_from(result: object) -> dict[str, Any]:
         "replay",
         "session_id",
         "expires_at",
+        "lease_id",
     ):
         if hasattr(result, name):
             payload[name] = _jsonable(getattr(result, name))

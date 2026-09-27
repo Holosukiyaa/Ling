@@ -9,6 +9,7 @@ from ling.application.ports.attachments import (
     AttachmentSessionRepository,
     SlotCredentialRepository,
 )
+from ling.application.ports.leases import ControllerLeaseRepository
 from ling.application.ports.operation_receipts import OperationReceiptRepository
 from ling.application.ports.repositories import (
     ConsumptionLockRepository,
@@ -32,6 +33,7 @@ class UnitOfWork(Protocol):
     operation_receipts: OperationReceiptRepository
     credentials: SlotCredentialRepository
     attachment_sessions: AttachmentSessionRepository
+    controller_leases: ControllerLeaseRepository
 
     def commit(self) -> None:
         """Publish staged aggregates in the order they were saved."""
