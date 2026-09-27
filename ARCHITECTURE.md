@@ -153,8 +153,10 @@ mentor 消费     consumed     不再可消费
 
 | 用例 | 调用者 | 主要动作 |
 | --- | --- | --- |
-| `register_slot` | 任意已连接的客户端 | 校验模板，在 Ling 本地创建槽位 |
-| `heartbeat` | 已注册槽位 | 把槽位标为在线，并写入最近心跳时间 |
+| `register_slot` | 任意已连接的客户端 | 校验模板。新槽位同时保存 attachment token 的 SHA-256。没有凭据的旧槽位在模板相同时 provision 一次；已有凭据或模板不同返回 `conflict` |
+| `attach` | 当前 MCP 进程 | 校验 token 摘要，创建会过期的 session，并绑定这个 stdio 进程。失败一律是 `attachment_rejected` |
+| `detach` | 当前 MCP 进程 | 撤销当前 session 并清除绑定。重复调用成功。不通知 Coordinator |
+| `heartbeat` | 已接驳槽位 | 把 session 对应的槽位标为在线，并写入最近心跳时间 |
 | `dispatch` | mentor | 校验等级和消费锁，创建队列 1 票。`target_slot_id` 可省略；写上时槽位必须存在且模板与目标模板相同，离线也可以接票 |
 | `claim` | worker | 校验槽位、queued 状态和领取冲突，在本地事务中记录领取者。票上有目标槽位时，只有该槽位能领取，其他 worker 在改状态之前得到 forbidden |
 | `abandon_claim` | worker | 只有当前领取者能把 claimed 票退回队列 1，清空领取者，并删除该票的文件锁；原 mentor 的消费锁仍绑定这张票 |
@@ -162,7 +164,7 @@ mentor 消费     consumed     不再可消费
 | `review` | checker | 从队列 3 取票，产生 accepted/rejected 结论并放入队列 2 |
 | `consume` | 原 mentor | 只能消费自己发出的 ticket id；消费后释放消费锁和该票的文件锁 |
 | `acquire_file_lock` | 已领取票的 worker | 在 Ling 本地记录 ticket、持有槽位和路径；冲突路径不能被另一张票占用 |
-| `dashboard` | 只读客户端 | 返回 Ling 自己的槽位、票据、队列、锁和心跳，不改状态 |
+| `dashboard` | 已接驳客户端 | 返回 Ling 自己的槽位、票据、队列、锁和心跳，不改状态。这一版不按槽位过滤 |
 
 每个命令遵循同一顺序：
 
@@ -172,7 +174,9 @@ mentor 消费     consumed     不再可消费
 
 `dashboard` 只读取这些记录，不提交。
 
-SQLite 用 WAL。schema 版本记在 SQLite `user_version`，当前是 4。没有版本标记的现有库会升到当前版本，已有的槽位、票据、锁和心跳都保留。版本 2 增加 `operation_receipts`，版本 3 为 `created_at` 增加索引，版本 4 为票据增加可空列 `target_slot_id`，旧票为 NULL。高于当前版本的库拒绝打开，不会静默降级。迁移在一个事务里完成，失败则整段回滚。读到第一次 `get` 时开启 `BEGIN IMMEDIATE`，把同一次用例里的读取和写入放进同一个写事务，避免两个领取同时成功。领取、消费和派发仍靠领域检查；槽位、票据和路径另有唯一约束，重复插入不会静默覆盖。
+SQLite 用 WAL。schema 版本记在 SQLite `user_version`，当前是 5。没有版本标记的现有库会升到当前版本，已有的槽位、票据、锁和心跳都保留。版本 2 增加 `operation_receipts`，版本 3 为 `created_at` 增加索引，版本 4 为票据增加可空列 `target_slot_id`，旧票为 NULL。版本 5 增加 `slot_credentials` 和 `attachment_sessions`。旧槽位没有凭据行，直到被 provision。凭据列只保存 SHA-256 十六进制摘要，不保存原始 attachment token。高于当前版本的库拒绝打开，不会静默降级。迁移在一个事务里完成，失败则整段回滚。读到第一次 `get` 时开启 `BEGIN IMMEDIATE`，把同一次用例里的读取和写入放进同一个写事务，避免两个领取同时成功。领取、消费和派发仍靠领域检查；槽位、票据和路径另有唯一约束，重复插入不会静默覆盖。
+
+接驳 session 不是 domain 实体。domain 不保存 token、摘要或 MCP 连接。application 通过端口保存摘要和 session，SQLite 实现这些端口。`LING_ATTACHMENT_TTL_SECONDS` 是正整数秒数，默认 3600；非法值使用默认值。session 过期或撤销后不能再充当调用者。进程关闭时撤销自己的 session，不向 stdout 写内容。attach 和 detach 不写 operation receipt，也不进入 Coordinator 队列。
 
 九个修改型命令可以接收调用方的 `operation_id`。不提供时仍由 Ling 生成。成功提交时，回执和这次业务写入在同一个 commit 里落盘。之后用同一个 `operation_id`、同一个工具和同一组规范化参数重试，会返回第一次的成功结果，不再次执行状态转换，也不再次通知可选的 Coordinator 观测。工具或参数不同则返回 `conflict`。`invalid_input`、`not_found`、`forbidden`、领域拒绝和 `internal` 不写回执。`dashboard` 没有 `operation_id` 输入。
 
@@ -182,12 +186,16 @@ SQLite 用 WAL。schema 版本记在 SQLite `user_version`，当前是 4。没�
 
 MCP 只是入站适配器。每个工具只做参数解析、身份提取、调用 application 用例和错误映射，不包含权限判断、SQL 或 HTTP 调用。本地结果确定之后，server 先生成并写入 RuntimeEvent，再把成功且非重放的调用交给可选的 `RuntimeObserver`。Coordinator 失败不能改掉已经写下的事件，也不能改 MCP 返回。两条观测互不替代。RuntimeEvent 记录工具名、结果摘要和耗时，不记录业务正文，也不是 operation receipt，也不是业务状态。多个 Ling 进程可以共享同一个 JSONL 文件；`<LING_EVENT_LOG>.lock` 保证一次只写完整的一行。`LING_EVENT_LOG` 未设置时不创建日志文件，也不创建锁文件。事件写失败或加锁失败只留在 stderr，不能改写本地结果，也不能把成功变成 `internal`。日志轮转可选：`LING_EVENT_LOG_MAX_BYTES` 未设置时只追加；设置后在同一把 `<LING_EVENT_LOG>.lock` 里把当前文件改名为 `.1`、`.2` 等，默认保留 3 个备份。本地 RuntimeEvent JSONL 是排障日志，不是 domain 状态，也不是 Ling 的界面，不影响 Agent Coordinator GUI 或 MCP。Ling 没有内置 GUI，也不启动 GUI、Agent 或 Coordinator。未设置 `LING_COORDINATOR_URL` 时，Ling 不产生外部请求，也可以单独运行。
 
-配置 `LING_COORDINATOR_URL`、可选的 `LING_COORDINATOR_API_KEY` 和 `LING_COORDINATOR_WORKSPACE` 之后，成功且非重放的注册、心跳、派发、领取、提交、审核和消费会投影到已有的 Agent Coordinator。部署者单独打开 `http://localhost:9889/dashboard`。失败调用、重放调用和 dashboard 查询不进入该队列。队列满或投影失败只留在 stderr。Coordinator GUI 是外部可选观测界面，不是 Ling 内置界面。
+配置 `LING_COORDINATOR_URL`、可选的 `LING_COORDINATOR_API_KEY` 和 `LING_COORDINATOR_WORKSPACE` 之后，成功且非重放的注册、心跳、派发、领取、提交、审核和消费会投影到已有的 Agent Coordinator。部署者单独打开 `http://localhost:9889/dashboard`。失败调用、重放调用、dashboard 查询、attach 和 detach 不进入该队列。注册投影不包含原始 attachment token。队列满或投影失败只留在 stderr。Coordinator GUI 是外部可选观测界面，不是 Ling 内置界面。
 
-第一批工具可以稳定为：
+除注册、attach 和 detach 以外，工具调用都先要求当前 stdio 进程已经 attach。未接驳返回 `attachment_required`，并且不会进入用例，也不会通知 Coordinator。调用者身份只来自该 session。请求若带上不同的 `slot_id`、`issuer_slot_id` 或 `actor_slot_id`，返回 `forbidden`。省略时由 session 补上。`target_slot_id` 仍然只约束票据可以被谁领取。这一版不实现总控租约，也不按 worker 过滤 `tools/list` 或 dashboard。
+
+当前工具可以稳定为：
 
 ```text
 ling_register_slot
+ling_attach
+ling_detach
 ling_heartbeat
 ling_dispatch
 ling_claim
@@ -238,7 +246,7 @@ Ling 不选择模型，也不适配 Grok、Claude、Codex 或其他具体 Agent�
 4. 接入 MCP stdio 工具，让调用方自己的 Agent loop 可以驱动完整票据流。
 5. 增加只读 dashboard 查询。
 
-第 4 步和第 5 步已经接上。`python -m ling` 提供这十个工具，数据库路径来自 `--database` 或 `LING_DATABASE`。dashboard 走只读查询。
+第 4 步和第 5 步已经接上。`python -m ling` 提供上面十二个工具，数据库路径来自 `--database` 或 `LING_DATABASE`。dashboard 走只读查询，并且在这一版对任何已接驳 session 返回完整快照。
 
 第一版不实现 FastAPI 页面、模型启动器或具体 Agent 适配器。可选的 Agent Coordinator 观测不是运行时依赖；未配置 URL 时它不存在。
 

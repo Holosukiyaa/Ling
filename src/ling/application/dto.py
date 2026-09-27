@@ -16,14 +16,21 @@ NOT_ISSUER = "not_issuer"
 CONSUMPTION_LOCK_HELD = "consumption_lock_held"
 LOCK_MISMATCH = "lock_mismatch"
 INVALID_INPUT = "invalid_input"
+ATTACHMENT_REQUIRED = "attachment_required"
+ATTACHMENT_REJECTED = "attachment_rejected"
 
 
 @dataclass(frozen=True, slots=True)
 class RegisterSlotCommand:
-    """Register one slot against a known template declaration."""
+    """Register one slot against a known template declaration.
+
+    `token_hash` is the SHA-256 hex digest of the attachment token. The raw
+    token is not part of this command.
+    """
 
     slot_id: str
     template_id: str
+    token_hash: str
     operation_id: str | None = None
 
 
@@ -304,3 +311,45 @@ class DashboardResult:
     tickets: tuple[DashboardTicket, ...] = ()
     consumption_locks: tuple[DashboardConsumptionLock, ...] = ()
     file_locks: tuple[DashboardFileLock, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class AttachCommand:
+    """Bind a new attachment session when the token hash matches the stored credential."""
+
+    slot_id: str
+    token_hash: str
+    ttl_seconds: int
+    replace_session_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class AttachResult:
+    """New attachment session, or a rejection that does not reveal why the token failed."""
+
+    ok: bool
+    operation_id: str
+    occurred_at: datetime
+    slot_id: str | None = None
+    session_id: str | None = None
+    expires_at: datetime | None = None
+    error_code: str | None = None
+    message: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class DetachCommand:
+    """Revoke one attachment session. A missing session is already detached."""
+
+    session_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class DetachResult:
+    """Detached session. Repeated detach stays successful."""
+
+    ok: bool
+    operation_id: str
+    occurred_at: datetime
+    error_code: str | None = None
+    message: str = ""

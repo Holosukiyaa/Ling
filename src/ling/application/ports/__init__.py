@@ -1,5 +1,11 @@
 """Ports that infrastructure may implement. Synchronous protocols only."""
 
+from ling.application.ports.attachments import (
+    AttachmentSession,
+    AttachmentSessionRepository,
+    SlotCredential,
+    SlotCredentialRepository,
+)
 from ling.application.ports.clock import Clock
 from ling.application.ports.id_generator import IdGenerator
 from ling.application.ports.observability import (
@@ -18,6 +24,8 @@ from ling.application.ports.repositories import (
 from ling.application.ports.unit_of_work import UnitOfWork
 
 __all__ = [
+    "AttachmentSession",
+    "AttachmentSessionRepository",
     "Clock",
     "ConsumptionLockRepository",
     "FileLockRepository",
@@ -28,6 +36,8 @@ __all__ = [
     "RuntimeEvent",
     "RuntimeEventSink",
     "RuntimeObserver",
+    "SlotCredential",
+    "SlotCredentialRepository",
     "SlotRepository",
     "TicketRepository",
     "UnitOfWork",

@@ -13,3 +13,6 @@ class IdGenerator(Protocol):
 
     def new_operation_id(self) -> str:
         """Return a new non-empty operation id used as an idempotency key."""
+
+    def new_session_id(self) -> str:
+        """Return a new opaque attachment session id."""

@@ -11,9 +11,11 @@ from types import TracebackType
 from ling.infrastructure.persistence.sqlite.connection import connect
 from ling.infrastructure.persistence.sqlite.errors import StorageError
 from ling.infrastructure.persistence.sqlite.repositories import (
+    SqliteAttachmentSessionRepository,
     SqliteConsumptionLockRepository,
     SqliteFileLockRepository,
     SqliteOperationReceiptRepository,
+    SqliteSlotCredentialRepository,
     SqliteSlotRepository,
     SqliteTicketRepository,
     insert_aggregate,
@@ -94,6 +96,8 @@ class SqliteUnitOfWork:
         self.consumption_locks = SqliteConsumptionLockRepository(self)
         self.file_locks = SqliteFileLockRepository(self)
         self.operation_receipts = SqliteOperationReceiptRepository(self)
+        self.credentials = SqliteSlotCredentialRepository(self)
+        self.attachment_sessions = SqliteAttachmentSessionRepository(self)
 
     def _connection(self) -> sqlite3.Connection:
         """The open connection. Closed units raise `StorageError`."""

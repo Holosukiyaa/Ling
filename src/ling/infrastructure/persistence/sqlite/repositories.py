@@ -6,6 +6,7 @@ import sqlite3
 from datetime import datetime
 from typing import TYPE_CHECKING
 
+from ling.application.ports.attachments import AttachmentSession, SlotCredential
 from ling.application.ports.operation_receipts import OperationReceipt, OperationReceiptTaken
 from ling.domain.agents.entities import Slot, template_catalog
 from ling.domain.agents.values import SlotId, TemplateId
@@ -218,6 +219,57 @@ class SqliteOperationReceiptRepository:
         self._uow.stage("operation_receipt", receipt.operation_id, receipt)
 
 
+class SqliteSlotCredentialRepository:
+    """Stage one SHA-256 credential per slot. The raw token is never written."""
+
+    def __init__(self, unit_of_work: SqliteUnitOfWork) -> None:
+        self._uow = unit_of_work
+
+    def get(self, slot_id: str) -> SlotCredential | None:
+        self._uow.begin_for_read()
+        staged = self._uow.staged("slot_credential", slot_id)
+        if isinstance(staged, SlotCredential):
+            return staged
+        row = self._uow._connection().execute(
+            "SELECT slot_id, token_hash, created_at FROM slot_credentials WHERE slot_id = ?",
+            (slot_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        self._uow.note_loaded("slot_credential", slot_id)
+        return _credential_from_row(row)
+
+    def save(self, credential: SlotCredential) -> None:
+        self._uow.stage("slot_credential", credential.slot_id, credential)
+
+
+class SqliteAttachmentSessionRepository:
+    """Stage attachment sessions. Revocation is an update of the same row."""
+
+    def __init__(self, unit_of_work: SqliteUnitOfWork) -> None:
+        self._uow = unit_of_work
+
+    def get(self, session_id: str) -> AttachmentSession | None:
+        self._uow.begin_for_read()
+        staged = self._uow.staged("attachment_session", session_id)
+        if isinstance(staged, AttachmentSession):
+            return staged
+        row = self._uow._connection().execute(
+            """
+            SELECT session_id, slot_id, expires_at, created_at, revoked_at
+            FROM attachment_sessions WHERE session_id = ?
+            """,
+            (session_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        self._uow.note_loaded("attachment_session", session_id)
+        return _session_from_row(row)
+
+    def save(self, session: AttachmentSession) -> None:
+        self._uow.stage("attachment_session", session.session_id, session)
+
+
 def _receipt_from_row(row: sqlite3.Row) -> OperationReceipt:
     created_at = row["created_at"]
     if not isinstance(created_at, str):
@@ -277,6 +329,16 @@ def insert_aggregate(connection: sqlite3.Connection, kind: str, item: object) ->
                 raise StorageError("operation receipt save received the wrong aggregate")
             _insert_operation_receipt(connection, item)
             return
+        if kind == "slot_credential":
+            if not isinstance(item, SlotCredential):
+                raise StorageError("slot credential save received the wrong record")
+            _insert_credential(connection, item)
+            return
+        if kind == "attachment_session":
+            if not isinstance(item, AttachmentSession):
+                raise StorageError("attachment session save received the wrong record")
+            _insert_session(connection, item)
+            return
         if not isinstance(item, ConsumptionLock):
             raise StorageError("consumption lock save received the wrong aggregate")
         connection.execute(
@@ -334,6 +396,16 @@ def update_aggregate(connection: sqlite3.Connection, kind: str, item: object) ->
             if not isinstance(item, FileLock):
                 raise StorageError("file lock save received the wrong aggregate")
             _replace_file_lock_paths(connection, item)
+            return
+        if kind == "slot_credential":
+            if not isinstance(item, SlotCredential):
+                raise StorageError("slot credential save received the wrong record")
+            _update_credential(connection, item)
+            return
+        if kind == "attachment_session":
+            if not isinstance(item, AttachmentSession):
+                raise StorageError("attachment session save received the wrong record")
+            _update_session(connection, item)
             return
         else:
             if not isinstance(item, ConsumptionLock):
@@ -438,6 +510,111 @@ def _slot_values(slot: Slot) -> tuple[str, str, int, str | None]:
         1 if slot.online else 0,
         _format_time(slot.last_heartbeat_at),
     )
+
+
+def _credential_from_row(row: sqlite3.Row) -> SlotCredential:
+    slot_id = str(row["slot_id"])
+    return SlotCredential(
+        slot_id=slot_id,
+        token_hash=str(row["token_hash"]),
+        created_at=_aware_time(f"slot credential {slot_id}", row["created_at"]),
+    )
+
+
+def _session_from_row(row: sqlite3.Row) -> AttachmentSession:
+    session_id = str(row["session_id"])
+    revoked = row["revoked_at"]
+    return AttachmentSession(
+        session_id=session_id,
+        slot_id=str(row["slot_id"]),
+        expires_at=_aware_time(f"attachment session {session_id}", row["expires_at"]),
+        created_at=_aware_time(f"attachment session {session_id}", row["created_at"]),
+        revoked_at=None
+        if revoked is None
+        else _aware_time(f"attachment session {session_id}", revoked),
+    )
+
+
+def _insert_credential(connection: sqlite3.Connection, credential: SlotCredential) -> None:
+    connection.execute(
+        """
+        INSERT INTO slot_credentials (slot_id, token_hash, created_at)
+        VALUES (?, ?, ?)
+        """,
+        (credential.slot_id, credential.token_hash, credential.created_at.isoformat()),
+    )
+
+
+def _update_credential(connection: sqlite3.Connection, credential: SlotCredential) -> None:
+    cursor = connection.execute(
+        """
+        UPDATE slot_credentials
+        SET token_hash = ?, created_at = ?
+        WHERE slot_id = ?
+        """,
+        (credential.token_hash, credential.created_at.isoformat(), credential.slot_id),
+    )
+    _require_update(
+        connection,
+        cursor,
+        "slot_credential",
+        credential.slot_id,
+        "SELECT 1 FROM slot_credentials WHERE slot_id = ?",
+    )
+
+
+def _insert_session(connection: sqlite3.Connection, session: AttachmentSession) -> None:
+    connection.execute(
+        """
+        INSERT INTO attachment_sessions (
+            session_id, slot_id, expires_at, created_at, revoked_at
+        ) VALUES (?, ?, ?, ?, ?)
+        """,
+        _session_values(session),
+    )
+
+
+def _update_session(connection: sqlite3.Connection, session: AttachmentSession) -> None:
+    values = _session_values(session)
+    cursor = connection.execute(
+        """
+        UPDATE attachment_sessions
+        SET slot_id = ?, expires_at = ?, created_at = ?, revoked_at = ?
+        WHERE session_id = ?
+        """,
+        (values[1], values[2], values[3], values[4], values[0]),
+    )
+    _require_update(
+        connection,
+        cursor,
+        "attachment_session",
+        session.session_id,
+        "SELECT 1 FROM attachment_sessions WHERE session_id = ?",
+    )
+
+
+def _session_values(
+    session: AttachmentSession,
+) -> tuple[str, str, str, str, str | None]:
+    return (
+        session.session_id,
+        session.slot_id,
+        session.expires_at.isoformat(),
+        session.created_at.isoformat(),
+        None if session.revoked_at is None else session.revoked_at.isoformat(),
+    )
+
+
+def _aware_time(label: str, value: object) -> datetime:
+    if not isinstance(value, str) or not value:
+        raise StorageError(f"{label} has no time")
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise StorageError(f"{label} has an unreadable time") from exc
+    if parsed.tzinfo is None:
+        raise StorageError(f"{label} time has no timezone")
+    return parsed
 
 
 def _insert_operation_receipt(connection: sqlite3.Connection, receipt: OperationReceipt) -> None:
@@ -567,6 +744,10 @@ def _identity(kind: str, item: object) -> str:
         return item.mentor.value
     if isinstance(item, FileLock):
         return item.ticket_id.value
+    if isinstance(item, SlotCredential):
+        return item.slot_id
+    if isinstance(item, AttachmentSession):
+        return item.session_id
     return kind
 
 
@@ -575,6 +756,10 @@ def _label(kind: str) -> str:
         return "consumption lock"
     if kind == "file_lock":
         return "file lock"
+    if kind == "slot_credential":
+        return "slot credential"
+    if kind == "attachment_session":
+        return "attachment session"
     return kind
 
 

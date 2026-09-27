@@ -5,6 +5,10 @@ from __future__ import annotations
 from types import TracebackType
 from typing import Protocol, Self
 
+from ling.application.ports.attachments import (
+    AttachmentSessionRepository,
+    SlotCredentialRepository,
+)
 from ling.application.ports.operation_receipts import OperationReceiptRepository
 from ling.application.ports.repositories import (
     ConsumptionLockRepository,
@@ -26,6 +30,8 @@ class UnitOfWork(Protocol):
     consumption_locks: ConsumptionLockRepository
     file_locks: FileLockRepository
     operation_receipts: OperationReceiptRepository
+    credentials: SlotCredentialRepository
+    attachment_sessions: AttachmentSessionRepository
 
     def commit(self) -> None:
         """Publish staged aggregates in the order they were saved."""

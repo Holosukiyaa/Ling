@@ -18,47 +18,57 @@ class _Mutating(_Input):
 class RegisterSlotInput(_Mutating):
     slot_id: str = Field(min_length=1)
     template_id: str = Field(min_length=1)
+    attachment_token: str = Field(min_length=16)
+
+
+class AttachInput(_Input):
+    slot_id: str = Field(min_length=1)
+    attachment_token: str = Field(min_length=16)
+
+
+class DetachInput(_Input):
+    """Detach takes no arguments."""
 
 
 class HeartbeatInput(_Mutating):
-    slot_id: str = Field(min_length=1)
+    slot_id: str | None = Field(default=None, min_length=1)
 
 
 class DispatchInput(_Mutating):
-    issuer_slot_id: str = Field(min_length=1)
+    issuer_slot_id: str | None = Field(default=None, min_length=1)
     target_template_id: str = Field(min_length=1)
     content: str = Field(min_length=1)
     target_slot_id: str | None = Field(default=None, min_length=1)
 
 
 class ClaimInput(_Mutating):
-    actor_slot_id: str = Field(min_length=1)
+    actor_slot_id: str | None = Field(default=None, min_length=1)
     ticket_id: str = Field(min_length=1)
 
 
 class AbandonClaimInput(_Mutating):
-    actor_slot_id: str = Field(min_length=1)
+    actor_slot_id: str | None = Field(default=None, min_length=1)
     ticket_id: str = Field(min_length=1)
 
 
 class SubmitInput(_Mutating):
-    actor_slot_id: str = Field(min_length=1)
+    actor_slot_id: str | None = Field(default=None, min_length=1)
     ticket_id: str = Field(min_length=1)
 
 
 class ReviewInput(_Mutating):
-    actor_slot_id: str = Field(min_length=1)
+    actor_slot_id: str | None = Field(default=None, min_length=1)
     ticket_id: str = Field(min_length=1)
     decision: str = Field(min_length=1)
 
 
 class ConsumeInput(_Mutating):
-    actor_slot_id: str = Field(min_length=1)
+    actor_slot_id: str | None = Field(default=None, min_length=1)
     ticket_id: str = Field(min_length=1)
 
 
 class AcquireFileLockInput(_Mutating):
-    actor_slot_id: str = Field(min_length=1)
+    actor_slot_id: str | None = Field(default=None, min_length=1)
     ticket_id: str = Field(min_length=1)
     paths: list[str] = Field(min_length=1)
 
@@ -107,7 +117,12 @@ def _input_message(exc: ValidationError) -> str:
     kind = error["type"]
     if kind == "missing":
         return f"{location} is required"
-    if kind in {"string_too_short", "too_short", "value_error"}:
+    if kind in {"string_too_short", "too_short"}:
+        minimum = error.get("ctx", {}).get("min_length")
+        if isinstance(minimum, int) and minimum > 1:
+            return f"{location} must be at least {minimum} characters"
+        return f"{location} must be non-empty"
+    if kind == "value_error":
         return f"{location} must be non-empty"
     if kind.endswith("_type"):
         return f"{location} has the wrong type"

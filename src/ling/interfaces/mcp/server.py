@@ -16,14 +16,16 @@ from mcp.server.stdio import stdio_server
 from pydantic import BaseModel
 
 from ling.application.ports.observability import RUNTIME_EVENT_SCHEMA, RuntimeEvent
-from ling.interfaces.mcp.adapter import ToolDeps
+from ling.interfaces.mcp.adapter import ToolDeps, gate_attachment, redact_arguments
 from ling.interfaces.mcp.schemas import (
     TOOL_OUTPUT_SCHEMA,
     AbandonClaimInput,
     AcquireFileLockInput,
+    AttachInput,
     ClaimInput,
     ConsumeInput,
     DashboardInput,
+    DetachInput,
     DispatchInput,
     HeartbeatInput,
     RegisterSlotInput,
@@ -32,9 +34,11 @@ from ling.interfaces.mcp.schemas import (
 )
 from ling.interfaces.mcp.tools.abandon_claim import handle as abandon_claim
 from ling.interfaces.mcp.tools.acquire_file_lock import handle as acquire_file_lock
+from ling.interfaces.mcp.tools.attach import handle as attach
 from ling.interfaces.mcp.tools.claim import handle as claim
 from ling.interfaces.mcp.tools.consume import handle as consume
 from ling.interfaces.mcp.tools.dashboard import handle as dashboard
+from ling.interfaces.mcp.tools.detach import handle as detach
 from ling.interfaces.mcp.tools.dispatch import handle as dispatch
 from ling.interfaces.mcp.tools.heartbeat import handle as heartbeat
 from ling.interfaces.mcp.tools.register_slot import handle as register_slot
@@ -42,6 +46,8 @@ from ling.interfaces.mcp.tools.review import handle as review
 from ling.interfaces.mcp.tools.submit import handle as submit
 
 logger = logging.getLogger(__name__)
+
+_SILENT_TOOLS = frozenset({"ling_attach", "ling_detach"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,9 +61,21 @@ class _Tool:
 _TOOLS: tuple[_Tool, ...] = (
     _Tool(
         "ling_register_slot",
-        "Register a local slot from a template id.",
+        "Register a local slot from a template id and an attachment token.",
         RegisterSlotInput,
         register_slot,
+    ),
+    _Tool(
+        "ling_attach",
+        "Bind this MCP session to a slot by checking its attachment token.",
+        AttachInput,
+        attach,
+    ),
+    _Tool(
+        "ling_detach",
+        "Revoke this MCP session. A repeated call succeeds.",
+        DetachInput,
+        detach,
     ),
     _Tool(
         "ling_heartbeat",
@@ -115,20 +133,22 @@ _TOOLS: tuple[_Tool, ...] = (
     ),
 )
 
+_TOOLS_BY_NAME = {tool.name: tool for tool in _TOOLS}
+
 
 def build_server(deps: ToolDeps) -> Server:
-    """Register the ten local tools on an official MCP server."""
+    """Register the local tools on an official MCP server."""
 
     server: Server = Server(
         "ling",
         version="0.0.0",
         instructions=(
             "Local task and permission kernel. The caller connects to this server. "
-            "This server does not start an agent or choose a model."
+            "This server does not start an agent or choose a model. "
+            "ling_register_slot, ling_attach, and ling_detach work before a session "
+            "is attached. Other tools use the attached slot."
         ),
     )
-    by_name = {tool.name: tool for tool in _TOOLS}
-
     @server.list_tools()
     async def list_tools() -> list[types.Tool]:
         started = time.perf_counter()
@@ -156,30 +176,7 @@ def build_server(deps: ToolDeps) -> Server:
 
     @server.call_tool(validate_input=False)
     async def call_tool(name: str, arguments: dict[str, Any] | None) -> types.CallToolResult:
-        started = time.perf_counter()
-        replay = False
-        tool = by_name.get(name)
-        if tool is None:
-            payload = {
-                "ok": False,
-                "operation_id": deps.ids.new_operation_id(),
-                "ticket_id": None,
-                "state": None,
-                "queue": None,
-                "error_code": "not_found",
-                "message": "unknown tool",
-            }
-        else:
-            try:
-                payload = tool.handle(arguments or {}, deps)
-            except Exception:
-                logger.exception("tool %s failed", name)
-                payload = _internal_payload(deps)
-            else:
-                replay = bool(payload.pop("replay", False))
-        _record(deps, name, payload, replay, started)
-        if not replay:
-            _observe(deps, name, arguments or {}, payload)
+        payload = invoke_tool(deps, name, arguments)
         return types.CallToolResult(
             content=[types.TextContent(type="text", text=json.dumps(payload))],
             structuredContent=payload,
@@ -189,13 +186,48 @@ def build_server(deps: ToolDeps) -> Server:
     return server
 
 
-def _observe(deps: ToolDeps, name: str, arguments: dict[str, Any], payload: dict[str, Any]) -> None:
-    """Hand a successful local result to the observer. Observation cannot change it."""
+def invoke_tool(deps: ToolDeps, name: str, arguments: dict[str, Any] | None) -> dict[str, Any]:
+    """Run one tool call, including the attachment gate, event, and observer."""
 
-    if not payload.get("ok"):
+    started = time.perf_counter()
+    replay = False
+    raw = arguments or {}
+    tool = _TOOLS_BY_NAME.get(name)
+    if tool is None:
+        payload = {
+            "ok": False,
+            "operation_id": deps.ids.new_operation_id(),
+            "ticket_id": None,
+            "state": None,
+            "queue": None,
+            "error_code": "not_found",
+            "message": "unknown tool",
+        }
+    else:
+        try:
+            refusal, bound = gate_attachment(deps, name, raw)
+            if refusal is not None:
+                payload = refusal
+            else:
+                payload = tool.handle(bound, deps)
+        except Exception:
+            logger.exception("tool %s failed", name)
+            payload = _internal_payload(deps)
+        else:
+            replay = bool(payload.pop("replay", False))
+    _record(deps, name, payload, replay, started)
+    if not replay:
+        _observe(deps, name, raw, payload)
+    return payload
+
+
+def _observe(deps: ToolDeps, name: str, arguments: dict[str, Any], payload: dict[str, Any]) -> None:
+    """Hand a successful business result to the observer. Attach and detach stay local."""
+
+    if name in _SILENT_TOOLS or not payload.get("ok"):
         return
     try:
-        deps.observer.observe(name, arguments, payload)
+        deps.observer.observe(name, redact_arguments(arguments), payload)
     except Exception:
         logger.exception("coordinator observation failed")
 

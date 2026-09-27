@@ -10,8 +10,11 @@ file. Opening it creates any missing current tables and advances to the
 current version without changing rows that are already there. Version 2 adds
 operation receipts. Version 3 indexes `created_at` for the explicit
 maintenance purge. Version 4 adds nullable `tickets.target_slot_id`; existing
-rows stay NULL. A newer `user_version` is refused. Each upgrade runs in one
-transaction and rolls back when it fails.
+rows stay NULL. Version 5 adds `slot_credentials` and `attachment_sessions`.
+Existing slot rows stay, with no credential until one is provisioned. The
+credential table stores a SHA-256 hash, never an attachment token. A newer
+`user_version` is refused. Each upgrade runs in one transaction and rolls
+back when it fails.
 """
 
 from __future__ import annotations
@@ -20,7 +23,7 @@ import sqlite3
 
 from ling.infrastructure.persistence.sqlite.errors import StorageError
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 _VERSION_1_STATEMENTS = (
     """
@@ -119,7 +122,41 @@ def _upgrade_to_4(connection: sqlite3.Connection) -> None:
     _execute_all(connection, _VERSION_4_STATEMENTS)
 
 
-_UPGRADES = {1: _upgrade_to_1, 2: _upgrade_to_2, 3: _upgrade_to_3, 4: _upgrade_to_4}
+_VERSION_5_STATEMENTS = (
+    """
+    CREATE TABLE IF NOT EXISTS slot_credentials (
+        slot_id TEXT PRIMARY KEY REFERENCES slots(slot_id),
+        token_hash TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        CHECK (
+            length(token_hash) = 64
+            AND token_hash NOT GLOB '*[^0-9a-f]*'
+        )
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS attachment_sessions (
+        session_id TEXT PRIMARY KEY,
+        slot_id TEXT NOT NULL REFERENCES slots(slot_id),
+        expires_at TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        revoked_at TEXT
+    )
+    """,
+)
+
+
+def _upgrade_to_5(connection: sqlite3.Connection) -> None:
+    _execute_all(connection, _VERSION_5_STATEMENTS)
+
+
+_UPGRADES = {
+    1: _upgrade_to_1,
+    2: _upgrade_to_2,
+    3: _upgrade_to_3,
+    4: _upgrade_to_4,
+    5: _upgrade_to_5,
+}
 
 
 def initialize(connection: sqlite3.Connection) -> None:
