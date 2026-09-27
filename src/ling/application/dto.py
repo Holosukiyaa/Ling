@@ -66,11 +66,15 @@ class HeartbeatResult:
 
 @dataclass(frozen=True, slots=True)
 class DispatchCommand:
-    """Mentor dispatch toward a template its declaration is allowed to manage."""
+    """Mentor dispatch toward a template its declaration is allowed to manage.
+
+    `target_slot_id` is optional. Omit it to keep template-only dispatch.
+    """
 
     issuer_slot_id: str
     target_template_id: str
     content: str
+    target_slot_id: str | None = None
     operation_id: str | None = None
 
 
@@ -263,6 +267,7 @@ class DashboardTicket:
     queue: int | None
     claimant: str | None
     review_result: str | None
+    target_slot_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

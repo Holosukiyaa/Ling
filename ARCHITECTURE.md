@@ -127,7 +127,7 @@ ling/
 
 - `Template`：模板声明、等级、能力和可管理的模板类型。
 - `Slot`：模板的一次实例化，拥有稳定的 slot id、在线状态和最近心跳时间。slot id 不是外部系统的 agent id。
-- `Ticket`：全程不变的 ticket id、发起槽位、目标类型、任务内容、当前状态、当前队列、领取者和结果。
+- `Ticket`：全程不变的 ticket id、发起槽位、可选的目标槽位、目标类型、任务内容、当前状态、当前队列、领取者和结果。未写目标槽位的票仍只按模板进队列。
 - `ConsumptionLock`：防止同一个 mentor 在前一张结果未消费前重复派发；它是 Ling 自己的记录。
 - `FileLock`：Ling 自己记录的路径占用，包含 ticket、持有槽位和路径集合。它不是操作系统文件锁。消费该票时释放。worker 放弃领取时，同一事务把票退回 queued，并删除该票的文件锁及其全部路径。消费锁不随放弃释放。票仍处于 claimed 时，没有单独的释放命令。
 
@@ -155,8 +155,8 @@ mentor 消费     consumed     不再可消费
 | --- | --- | --- |
 | `register_slot` | 任意已连接的客户端 | 校验模板，在 Ling 本地创建槽位 |
 | `heartbeat` | 已注册槽位 | 把槽位标为在线，并写入最近心跳时间 |
-| `dispatch` | mentor | 校验等级和消费锁，创建队列 1 票 |
-| `claim` | worker | 校验槽位、queued 状态和领取冲突，在本地事务中记录领取者 |
+| `dispatch` | mentor | 校验等级和消费锁，创建队列 1 票。`target_slot_id` 可省略；写上时槽位必须存在且模板与目标模板相同，离线也可以接票 |
+| `claim` | worker | 校验槽位、queued 状态和领取冲突，在本地事务中记录领取者。票上有目标槽位时，只有该槽位能领取，其他 worker 在改状态之前得到 forbidden |
 | `abandon_claim` | worker | 只有当前领取者能把 claimed 票退回队列 1，清空领取者，并删除该票的文件锁；原 mentor 的消费锁仍绑定这张票 |
 | `submit` | worker | 校验领取者，把票从队列 1 推到队列 3 |
 | `review` | checker | 从队列 3 取票，产生 accepted/rejected 结论并放入队列 2 |
@@ -172,7 +172,7 @@ mentor 消费     consumed     不再可消费
 
 `dashboard` 只读取这些记录，不提交。
 
-SQLite 用 WAL。schema 版本记在 SQLite `user_version`，当前是 3。没有版本标记的现有库会升到当前版本，已有的槽位、票据、锁和心跳都保留。版本 2 增加 `operation_receipts`，版本 3 为 `created_at` 增加索引。高于当前版本的库拒绝打开，不会静默降级。迁移在一个事务里完成，失败则整段回滚。读到第一次 `get` 时开启 `BEGIN IMMEDIATE`，把同一次用例里的读取和写入放进同一个写事务，避免两个领取同时成功。领取、消费和派发仍靠领域检查；槽位、票据和路径另有唯一约束，重复插入不会静默覆盖。
+SQLite 用 WAL。schema 版本记在 SQLite `user_version`，当前是 4。没有版本标记的现有库会升到当前版本，已有的槽位、票据、锁和心跳都保留。版本 2 增加 `operation_receipts`，版本 3 为 `created_at` 增加索引，版本 4 为票据增加可空列 `target_slot_id`，旧票为 NULL。高于当前版本的库拒绝打开，不会静默降级。迁移在一个事务里完成，失败则整段回滚。读到第一次 `get` 时开启 `BEGIN IMMEDIATE`，把同一次用例里的读取和写入放进同一个写事务，避免两个领取同时成功。领取、消费和派发仍靠领域检查；槽位、票据和路径另有唯一约束，重复插入不会静默覆盖。
 
 九个修改型命令可以接收调用方的 `operation_id`。不提供时仍由 Ling 生成。成功提交时，回执和这次业务写入在同一个 commit 里落盘。之后用同一个 `operation_id`、同一个工具和同一组规范化参数重试，会返回第一次的成功结果，不再次执行状态转换，也不再次通知可选的 Coordinator 观测。工具或参数不同则返回 `conflict`。`invalid_input`、`not_found`、`forbidden`、领域拒绝和 `internal` 不写回执。`dashboard` 没有 `operation_id` 输入。
 

@@ -72,7 +72,8 @@ class SqliteTicketRepository:
             return staged
         row = self._uow._connection().execute(
             """
-            SELECT ticket_id, issuer_slot_id, content, state, claimant_slot_id, review_result
+            SELECT ticket_id, issuer_slot_id, content, state, claimant_slot_id, review_result,
+                   target_slot_id
             FROM tickets WHERE ticket_id = ?
             """,
             (ticket_id.value,),
@@ -89,7 +90,8 @@ class SqliteTicketRepository:
         self._uow.begin_for_read()
         rows = self._uow._connection().execute(
             """
-            SELECT ticket_id, issuer_slot_id, content, state, claimant_slot_id, review_result
+            SELECT ticket_id, issuer_slot_id, content, state, claimant_slot_id, review_result,
+                   target_slot_id
             FROM tickets ORDER BY ticket_id
             """
         ).fetchall()
@@ -258,8 +260,9 @@ def insert_aggregate(connection: sqlite3.Connection, kind: str, item: object) ->
             connection.execute(
                 """
                 INSERT INTO tickets (
-                    ticket_id, issuer_slot_id, content, state, claimant_slot_id, review_result
-                ) VALUES (?, ?, ?, ?, ?, ?)
+                    ticket_id, issuer_slot_id, content, state, claimant_slot_id, review_result,
+                    target_slot_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
                 _ticket_values(item),
             )
@@ -314,10 +317,10 @@ def update_aggregate(connection: sqlite3.Connection, kind: str, item: object) ->
                 """
                 UPDATE tickets
                 SET issuer_slot_id = ?, content = ?, state = ?,
-                    claimant_slot_id = ?, review_result = ?
+                    claimant_slot_id = ?, review_result = ?, target_slot_id = ?
                 WHERE ticket_id = ?
                 """,
-                (values[1], values[2], values[3], values[4], values[5], values[0]),
+                (values[1], values[2], values[3], values[4], values[5], values[6], values[0]),
             )
             _require_update(
                 connection,
@@ -378,7 +381,12 @@ def ticket_from_row(row: sqlite3.Row) -> Ticket:
     state = _state(ticket_id, row["state"])
     claimant = _optional_text(row["claimant_slot_id"])
     review = _review(ticket_id, row["review_result"])
-    ticket = Ticket(TicketId(ticket_id), SlotId(issuer), content)
+    ticket = Ticket(
+        TicketId(ticket_id),
+        SlotId(issuer),
+        content,
+        target_slot_id=_target_slot(ticket_id, row["target_slot_id"]),
+    )
     if state is TicketState.QUEUED:
         return _checked(ticket, state, None, None)
     if claimant is None:
@@ -515,9 +523,10 @@ def _parse_time(slot_id: str, value: object) -> datetime | None:
     return parsed
 
 
-def _ticket_values(ticket: Ticket) -> tuple[str, str, str, str, str | None, str | None]:
+def _ticket_values(ticket: Ticket) -> tuple[str, str, str, str, str | None, str | None, str | None]:
     claimant = None if ticket.claimant is None else ticket.claimant.value
     review = None if ticket.review_result is None else ticket.review_result.value
+    target = None if ticket.target_slot_id is None else ticket.target_slot_id.value
     return (
         ticket.ticket_id.value,
         ticket.issuer.value,
@@ -525,6 +534,7 @@ def _ticket_values(ticket: Ticket) -> tuple[str, str, str, str, str | None, str 
         ticket.state.value,
         claimant,
         review,
+        target,
     )
 
 
@@ -576,6 +586,16 @@ def _integrity(kind: str, key: str, exc: sqlite3.IntegrityError) -> StorageError
     if "foreign key" in text:
         return StorageError(f"{label} {key} refers to a missing record")
     return StorageError(f"cannot store {label} {key}")
+
+
+def _target_slot(ticket_id: str, value: object) -> SlotId | None:
+    text = _optional_text(value)
+    if text is None:
+        return None
+    try:
+        return SlotId(text)
+    except ValueError as exc:
+        raise StorageError(f"ticket {ticket_id} has a blank target slot") from exc
 
 
 def _optional_text(value: object) -> str | None:

@@ -1,4 +1,9 @@
-"""Dispatch a ticket when the mentor template may manage the target template."""
+"""Dispatch a ticket when the mentor template may manage the target template.
+
+`target_slot_id` is optional. Omit it for template-only dispatch. When it is
+set, the slot must exist and use that same template. Offline slots may receive
+tickets.
+"""
 
 from __future__ import annotations
 
@@ -27,6 +32,7 @@ from ling.application.ports.id_generator import IdGenerator
 from ling.application.ports.unit_of_work import UnitOfWork
 from ling.domain.agents.entities import template_catalog
 from ling.domain.agents.policy import can_manage
+from ling.domain.agents.values import SlotId
 from ling.domain.errors import DomainError
 from ling.domain.locks import ConsumptionLock
 from ling.domain.tickets.entities import Ticket, TicketId
@@ -50,6 +56,7 @@ def execute(
         {
             "issuer_slot_id": command.issuer_slot_id,
             "target_template_id": command.target_template_id,
+            "target_slot_id": command.target_slot_id,
             "content": command.content,
         },
         DispatchResult,
@@ -83,6 +90,10 @@ def execute(
     if not command.content.strip():
         uow.rollback()
         return _refused(operation_id, occurred_at, INVALID_INPUT, "ticket content is empty")
+    bound_slot, slot_error = _optional_target_slot(command.target_slot_id)
+    if slot_error is not None:
+        uow.rollback()
+        return _refused(operation_id, occurred_at, INVALID_INPUT, slot_error)
     issuer = load_slot(uow, issuer_id)
     if issuer is None:
         uow.rollback()
@@ -92,6 +103,24 @@ def execute(
         uow.rollback()
         code, message = not_found(f"unknown template {target_id.value}")
         return _refused(operation_id, occurred_at, code, message)
+    target_slot = None
+    if bound_slot is not None:
+        target_slot = load_slot(uow, bound_slot)
+        if target_slot is None:
+            uow.rollback()
+            code, message = not_found(f"slot {bound_slot.value} is not registered")
+            return _refused(operation_id, occurred_at, code, message)
+        if target_slot.template.template_id != target_id:
+            uow.rollback()
+            return _refused(
+                operation_id,
+                occurred_at,
+                INVALID_INPUT,
+                (
+                    f"slot {bound_slot.value} is template "
+                    f"{target_slot.template.template_id.value}, not {target_id.value}"
+                ),
+            )
     target = template_catalog()[target_id]
     if not can_manage(issuer.template, target):
         uow.rollback()
@@ -117,6 +146,7 @@ def execute(
         ticket_id=TicketId(ids.new_ticket_id()),
         issuer=issuer.slot_id,
         content=command.content,
+        target_slot_id=None if target_slot is None else target_slot.slot_id,
     )
     try:
         lock.occupy(ticket.ticket_id)
@@ -144,6 +174,19 @@ def execute(
         CONFLICT,
         "operation id was already used for a different request",
     )
+
+
+def _optional_target_slot(value: str | None) -> tuple[SlotId | None, str | None]:
+    """Return the bound slot, or an invalid-input message when the value is unusable."""
+
+    if value is None:
+        return None, None
+    if not isinstance(value, str):
+        return None, "target slot id must be a non-empty string"
+    parsed = parse_slot_id(value)
+    if parsed is None:
+        return None, "target slot id must be a non-empty string"
+    return parsed, None
 
 
 def _refused(

@@ -10,7 +10,7 @@ python -m ling --database PATH
 
 `LING_DATABASE` 可以代替 `--database`。协议输出只走 stdout，提示和日志走 stderr。
 
-SQLite schema 版本是 3，记在 `user_version`。没有版本标记的旧文件会升到当前版本，并保留已有数据。版本 2 会补上成功操作回执表，版本 3 给回执的创建时间加索引。比 3 更新的文件会拒绝打开。
+SQLite schema 版本是 4，记在 `user_version`。没有版本标记的旧文件会升到当前版本，并保留已有数据。版本 2 会补上成功操作回执表，版本 3 给回执的创建时间加索引，版本 4 给票据增加可空的 `target_slot_id`，旧票保持 NULL。比 4 更新的文件会拒绝打开。派发可以省略 `target_slot_id`，这时仍按目标模板进入队列。带上它时，该槽位必须已经注册，且模板与 `target_template_id` 相同；对不上返回 `invalid_input`，槽位不存在返回 `not_found`。离线槽位也可以接票。绑定了目标槽位的票只能由那个槽位领取，其他 worker 得到 `forbidden`，票据状态不变。
 
 修改型工具可以带上 `operation_id`。不带时 Ling 仍会自己生成。同一个 `operation_id` 配上相同工具和相同参数，会原样返回第一次成功提交的结果，不会再次改状态。同一个 `operation_id` 配上不同工具或参数会返回 `conflict`。回执和本地状态在同一次提交里写入。只有成功提交的修改型操作会留下回执；失败不重放。`dashboard` 不接收 `operation_id`。回执默认永久保留，不属于 domain。部署者可以显式清理早于某个时刻的回执：
 

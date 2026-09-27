@@ -37,6 +37,12 @@ class NotIssuer(DomainError):
     code = "not_issuer"
 
 
+class NotTarget(DomainError):
+    """Claim was attempted by a slot other than the ticket's bound target."""
+
+    code = "forbidden"
+
+
 class UnknownEvent(DomainError):
     """The event name is not a declared ticket trigger."""
 

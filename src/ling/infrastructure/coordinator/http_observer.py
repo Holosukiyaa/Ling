@@ -235,6 +235,11 @@ def _details(
     decision = arguments.get("decision")
     if isinstance(decision, str) and decision.strip():
         details["decision"] = decision
+    target_slot_id = _text(arguments.get("target_slot_id"))
+    if target_slot_id is None:
+        target_slot_id = _text(result.get("target_slot_id"))
+    if target_slot_id is not None:
+        details["target_slot_id"] = target_slot_id
     paths = result.get("paths")
     if not isinstance(paths, list):
         paths = arguments.get("paths")

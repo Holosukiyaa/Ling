@@ -9,7 +9,9 @@ The schema version is SQLite's `user_version`. Version 0 means an unstamped
 file. Opening it creates any missing current tables and advances to the
 current version without changing rows that are already there. Version 2 adds
 operation receipts. Version 3 indexes `created_at` for the explicit
-maintenance purge. A newer `user_version` is refused.
+maintenance purge. Version 4 adds nullable `tickets.target_slot_id`; existing
+rows stay NULL. A newer `user_version` is refused. Each upgrade runs in one
+transaction and rolls back when it fails.
 """
 
 from __future__ import annotations
@@ -18,7 +20,7 @@ import sqlite3
 
 from ling.infrastructure.persistence.sqlite.errors import StorageError
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 _VERSION_1_STATEMENTS = (
     """
@@ -106,7 +108,18 @@ def _upgrade_to_3(connection: sqlite3.Connection) -> None:
     _execute_all(connection, _VERSION_3_STATEMENTS)
 
 
-_UPGRADES = {1: _upgrade_to_1, 2: _upgrade_to_2, 3: _upgrade_to_3}
+_VERSION_4_STATEMENTS = (
+    """
+    ALTER TABLE tickets ADD COLUMN target_slot_id TEXT REFERENCES slots(slot_id)
+    """,
+)
+
+
+def _upgrade_to_4(connection: sqlite3.Connection) -> None:
+    _execute_all(connection, _VERSION_4_STATEMENTS)
+
+
+_UPGRADES = {1: _upgrade_to_1, 2: _upgrade_to_2, 3: _upgrade_to_3, 4: _upgrade_to_4}
 
 
 def initialize(connection: sqlite3.Connection) -> None:

@@ -40,6 +40,7 @@ def execute(
             queue=None if ticket.queue is None else ticket.queue.number,
             claimant=None if ticket.claimant is None else ticket.claimant.value,
             review_result=None if ticket.review_result is None else ticket.review_result.value,
+            target_slot_id=None if ticket.target_slot_id is None else ticket.target_slot_id.value,
         )
         for ticket in uow.tickets.list()
     )

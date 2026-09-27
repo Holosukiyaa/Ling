@@ -28,6 +28,7 @@ class DispatchInput(_Mutating):
     issuer_slot_id: str = Field(min_length=1)
     target_template_id: str = Field(min_length=1)
     content: str = Field(min_length=1)
+    target_slot_id: str | None = Field(default=None, min_length=1)
 
 
 class ClaimInput(_Mutating):

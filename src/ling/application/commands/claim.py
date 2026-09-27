@@ -117,6 +117,19 @@ def execute(
             error_code=INVALID_TRANSITION,
             message=f"cannot claim from {ticket.state.value}",
         )
+    if ticket.target_slot_id is not None and actor.slot_id != ticket.target_slot_id:
+        uow.rollback()
+        return _snapshot(
+            operation_id,
+            occurred_at,
+            ticket,
+            ok=False,
+            error_code=FORBIDDEN,
+            message=(
+                f"{actor.slot_id.value} cannot claim {ticket.ticket_id.value} "
+                f"targeted at {ticket.target_slot_id.value}"
+            ),
+        )
     try:
         ticket.claim(actor.slot_id)
     except DomainError as exc:

@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from ling.domain.agents.values import SlotId
-from ling.domain.errors import AlreadyClaimed, InvalidTransition, NotClaimant, NotIssuer
+from ling.domain.errors import AlreadyClaimed, InvalidTransition, NotClaimant, NotIssuer, NotTarget
 from ling.domain.queues import Queue, queue_for
 from ling.domain.tickets.states import ReviewResult, TicketState
 from ling.domain.tickets.transitions import TicketMachine
@@ -26,14 +26,24 @@ class Ticket:
     """One unit of work from dispatch through mentor consumption.
 
     Queue membership is derived from state. There is no queue field to assign.
+    `target_slot_id` is optional. When it is set, only that slot may claim.
     """
 
-    def __init__(self, ticket_id: TicketId, issuer: SlotId, content: str) -> None:
+    def __init__(
+        self,
+        ticket_id: TicketId,
+        issuer: SlotId,
+        content: str,
+        target_slot_id: SlotId | None = None,
+    ) -> None:
         if not isinstance(content, str):
             raise ValueError("ticket content must be a string")
+        if target_slot_id is not None and not isinstance(target_slot_id, SlotId):
+            raise ValueError("target slot id must be a slot id")
         self.ticket_id = ticket_id
         self.issuer = issuer
         self.content = content
+        self.target_slot_id = target_slot_id
         self.claimant: SlotId | None = None
         self.review_result: ReviewResult | None = None
         self._machine = TicketMachine()
@@ -59,6 +69,11 @@ class Ticket:
             raise AlreadyClaimed(f"{self.ticket_id.value} already has a claimant")
         if self.state is not TicketState.QUEUED:
             raise InvalidTransition(f"cannot claim from {self.state.value}")
+        if self.target_slot_id is not None and actor != self.target_slot_id:
+            raise NotTarget(
+                f"{actor.value} cannot claim {self.ticket_id.value} "
+                f"targeted at {self.target_slot_id.value}"
+            )
         self._machine.fire("claim")
         self.claimant = actor
 
