@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import threading
 from pathlib import Path
 
@@ -14,10 +15,17 @@ logger = logging.getLogger(__name__)
 
 
 class JsonlRuntimeEventSink:
-    """Append one UTF-8 JSON line per event. Write errors stay on stderr."""
+    """Append one UTF-8 JSON line per event. Write errors stay on stderr.
 
-    def __init__(self, path: Path) -> None:
+    Rotation is optional. `max_bytes` None keeps appending forever. A positive
+    limit renames the live file to `.1` .. `.backups` before the next line
+    would pass that size. One line larger than the limit is still written.
+    """
+
+    def __init__(self, path: Path, *, max_bytes: int | None = None, backups: int = 3) -> None:
         self._path = path
+        self._max_bytes = max_bytes if isinstance(max_bytes, int) and max_bytes > 0 else None
+        self._backups = backups if isinstance(backups, int) and backups >= 0 else 3
         self._thread_lock = threading.Lock()
         self._file_lock = InterprocessFileLock(Path(str(path) + ".lock"))
 
@@ -35,6 +43,11 @@ class JsonlRuntimeEventSink:
             try:
                 self._path.parent.mkdir(parents=True, exist_ok=True)
                 descriptor = self._file_lock.acquire()
+                if self._max_bytes is not None and self._should_rotate(len(encoded)):
+                    try:
+                        self._rotate()
+                    except Exception:
+                        logger.warning("runtime event log rotation failed", exc_info=True)
                 with self._path.open("ab", buffering=0) as handle:
                     handle.write(encoded)
                     handle.flush()
@@ -55,3 +68,29 @@ class JsonlRuntimeEventSink:
                 return
         except Exception:
             logger.warning("runtime event log close failed", exc_info=True)
+
+    def _should_rotate(self, incoming: int) -> bool:
+        if not self._path.is_file():
+            return False
+        current = self._path.stat().st_size
+        if current <= 0:
+            return False
+        limit = self._max_bytes
+        return limit is not None and current + incoming > limit
+
+    def _rotate(self) -> None:
+        if self._backups <= 0:
+            self._path.unlink()
+            return
+        oldest = self._backup(self._backups)
+        if oldest.exists():
+            oldest.unlink()
+        for index in range(self._backups - 1, 0, -1):
+            source = self._backup(index)
+            if source.exists():
+                os.replace(source, self._backup(index + 1))
+        if self._path.exists():
+            os.replace(self._path, self._backup(1))
+
+    def _backup(self, index: int) -> Path:
+        return Path(f"{self._path}.{index}")
