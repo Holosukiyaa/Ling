@@ -20,7 +20,9 @@ python -m ling.maintenance --database PATH --before ISO_TIMESTAMP
 
 `--before` 必须带时区。`LING_DATABASE` 可以代替 `--database`。成功时删除数量和 cutoff 只写到 stdout。清理不会改槽位、票据、锁或业务状态，也不会在启动 MCP 时自动执行。被删掉的 `operation_id` 之后不再保证能重放。
 
-Agent Coordinator 观测是可选的。只有 `LING_COORDINATOR_URL` 非空时，成功的本地 MCP 调用才会把槽位在线状态和活动放进后台队列。MCP 结果不等待这些 HTTP 请求。队列有上限，满了就丢弃新的观测并记 stderr。未设置或为空时完全关闭，不创建后台线程，也不产生外部请求。投影失败不改变本地结果。
+本地 RuntimeEvent 观测是可选的。设置 `LING_EVENT_LOG` 后，每次 MCP 请求在返回前追加一行 JSONL，内容是工具名、结果摘要和耗时，不包含业务正文、原始参数或文件路径。未设置或为空时不创建日志文件。写日志失败只留在 stderr，不改变 MCP 结果。RuntimeEvent 不是 domain 状态，也不是 operation receipt。当前没有 Ling 内置 GUI。
+
+Agent Coordinator 观测是可选的，并且和本地 RuntimeEvent 分开。只有 `LING_COORDINATOR_URL` 非空时，成功的本地 MCP 调用才会把槽位在线状态和活动放进后台队列。MCP 结果不等待这些 HTTP 请求。队列有上限，满了就丢弃新的观测并记 stderr。未设置或为空时完全关闭，不创建后台线程，也不产生外部请求。投影失败不改变本地结果。重放、失败、未知工具和 dashboard 不进入 Coordinator。
 
 Agent Coordinator 不参与 claim、file lock、票据状态机，也不启动 Agent。`http://localhost:9889/dashboard` 是可选观测服务自己的页面，不是 Ling 的依赖。投影用的 agent id 由 slot id 哈希得到，只存在于这次观测请求里，不是 Ling domain 的 external agent id。
 
@@ -29,6 +31,7 @@ Agent Coordinator 不参与 claim、file lock、票据状态机，也不启动 A
 - `LING_COORDINATOR_API_KEY`：存在时作为请求头 `X-API-Key`
 - `LING_COORDINATOR_WORKSPACE`：未设置时使用进程当前工作目录
 - `LING_COORDINATOR_TIMEOUT`：秒；非法值使用 0.5
+- `LING_EVENT_LOG`：本地 JSONL 运行事件路径；未设置时不写文件
 
 依赖方向：
 

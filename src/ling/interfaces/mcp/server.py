@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
 
 import mcp.types as types
@@ -13,6 +15,7 @@ from mcp.server.lowlevel import Server
 from mcp.server.stdio import stdio_server
 from pydantic import BaseModel
 
+from ling.application.ports.observability import RUNTIME_EVENT_SCHEMA, RuntimeEvent
 from ling.interfaces.mcp.adapter import ToolDeps
 from ling.interfaces.mcp.schemas import (
     TOOL_OUTPUT_SCHEMA,
@@ -128,18 +131,33 @@ def build_server(deps: ToolDeps) -> Server:
 
     @server.list_tools()
     async def list_tools() -> list[types.Tool]:
-        return [
-            types.Tool(
-                name=tool.name,
-                description=tool.description,
-                inputSchema=tool.model.model_json_schema(),
-                outputSchema=TOOL_OUTPUT_SCHEMA,
-            )
-            for tool in _TOOLS
-        ]
+        started = time.perf_counter()
+        try:
+            listed = [
+                types.Tool(
+                    name=tool.name,
+                    description=tool.description,
+                    inputSchema=tool.model.model_json_schema(),
+                    outputSchema=TOOL_OUTPUT_SCHEMA,
+                )
+                for tool in _TOOLS
+            ]
+        except Exception:
+            _record(deps, "tools/list", _internal_payload(deps), False, started)
+            raise
+        _record(
+            deps,
+            "tools/list",
+            {"ok": True, "operation_id": None, "error_code": None, "ticket_id": None, "state": None, "queue": None},
+            False,
+            started,
+        )
+        return listed
 
     @server.call_tool(validate_input=False)
     async def call_tool(name: str, arguments: dict[str, Any] | None) -> types.CallToolResult:
+        started = time.perf_counter()
+        replay = False
         tool = by_name.get(name)
         if tool is None:
             payload = {
@@ -156,18 +174,12 @@ def build_server(deps: ToolDeps) -> Server:
                 payload = tool.handle(arguments or {}, deps)
             except Exception:
                 logger.exception("tool %s failed", name)
-                payload = {
-                    "ok": False,
-                    "operation_id": deps.ids.new_operation_id(),
-                    "ticket_id": None,
-                    "state": None,
-                    "queue": None,
-                    "error_code": "internal",
-                    "message": "request failed",
-                }
+                payload = _internal_payload(deps)
             else:
-                if not payload.pop("replay", False):
-                    _observe(deps, name, arguments or {}, payload)
+                replay = bool(payload.pop("replay", False))
+        _record(deps, name, payload, replay, started)
+        if not replay:
+            _observe(deps, name, arguments or {}, payload)
         return types.CallToolResult(
             content=[types.TextContent(type="text", text=json.dumps(payload))],
             structuredContent=payload,
@@ -186,6 +198,61 @@ def _observe(deps: ToolDeps, name: str, arguments: dict[str, Any], payload: dict
         deps.observer.observe(name, arguments, payload)
     except Exception:
         logger.exception("coordinator observation failed")
+
+
+def _internal_payload(deps: ToolDeps) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "operation_id": deps.ids.new_operation_id(),
+        "ticket_id": None,
+        "state": None,
+        "queue": None,
+        "error_code": "internal",
+        "message": "request failed",
+    }
+
+
+def _record(
+    deps: ToolDeps,
+    tool: str,
+    payload: dict[str, Any],
+    replay: bool,
+    started: float,
+) -> None:
+    """Write one local runtime event. A sink failure leaves the MCP payload unchanged."""
+
+    duration_ms = int((time.perf_counter() - started) * 1000)
+    if duration_ms < 0:
+        duration_ms = 0
+    event = RuntimeEvent(
+        schema=RUNTIME_EVENT_SCHEMA,
+        recorded_at=datetime.now(timezone.utc).isoformat(),
+        tool=tool,
+        operation_id=_text(payload.get("operation_id")),
+        ok=bool(payload.get("ok")),
+        error_code=_text(payload.get("error_code")),
+        ticket_id=_text(payload.get("ticket_id")),
+        state=_text(payload.get("state")),
+        queue=_queue(payload.get("queue")),
+        replay=replay,
+        duration_ms=duration_ms,
+    )
+    try:
+        deps.event_sink.record(event)
+    except Exception:
+        logger.exception("runtime event failed")
+
+
+def _text(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    return value
+
+
+def _queue(value: object) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
 
 
 async def run_stdio(server: Server) -> None:

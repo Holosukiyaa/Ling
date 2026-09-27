@@ -12,6 +12,7 @@ from pydantic import BaseModel
 
 from ling.application.ports.clock import Clock
 from ling.application.ports.id_generator import IdGenerator
+from ling.application.ports.observability import NullRuntimeEventSink, RuntimeEventSink
 from ling.application.ports.observer import NullRuntimeObserver, RuntimeObserver
 from ling.application.ports.unit_of_work import UnitOfWork
 from ling.interfaces.mcp.schemas import parse_input
@@ -27,6 +28,7 @@ class ToolDeps:
     ids: IdGenerator
     clock: Clock
     observer: RuntimeObserver = field(default_factory=NullRuntimeObserver)
+    event_sink: RuntimeEventSink = field(default_factory=NullRuntimeEventSink)
 
 
 def rejected(deps: ToolDeps, message: str, *, ticket_id: str | None = None) -> dict[str, Any]:

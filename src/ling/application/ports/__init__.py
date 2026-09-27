@@ -2,6 +2,12 @@
 
 from ling.application.ports.clock import Clock
 from ling.application.ports.id_generator import IdGenerator
+from ling.application.ports.observability import (
+    RUNTIME_EVENT_SCHEMA,
+    NullRuntimeEventSink,
+    RuntimeEvent,
+    RuntimeEventSink,
+)
 from ling.application.ports.observer import NullRuntimeObserver, RuntimeObserver
 from ling.application.ports.repositories import (
     ConsumptionLockRepository,
@@ -16,7 +22,11 @@ __all__ = [
     "ConsumptionLockRepository",
     "FileLockRepository",
     "IdGenerator",
+    "NullRuntimeEventSink",
     "NullRuntimeObserver",
+    "RUNTIME_EVENT_SCHEMA",
+    "RuntimeEvent",
+    "RuntimeEventSink",
     "RuntimeObserver",
     "SlotRepository",
     "TicketRepository",
