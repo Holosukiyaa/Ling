@@ -179,6 +179,10 @@ def build_server(deps: ToolDeps) -> Server:
             "This server does not start an agent or choose a model. "
             "ling_register_slot, ling_attach, and ling_detach work before a session "
             "is attached. Other tools use the attached slot. "
+            "A worker session may call only ling_heartbeat, ling_dashboard, "
+            "ling_claim, ling_abandon_claim, ling_submit, ling_acquire_file_lock, "
+            "ling_attach, and ling_detach. Its dashboard shows only its own slot "
+            "and tickets targeted at that slot. "
             "Only the attached codex-commander session can hold the controller lease "
             "and provision slot credentials."
         ),

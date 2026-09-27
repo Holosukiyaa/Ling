@@ -158,17 +158,17 @@ mentor 消费     consumed     不再可消费
 | `detach` | 当前 MCP 进程 | 撤销当前 session 并清除绑定。重复调用成功。不通知 Coordinator |
 | `heartbeat` | 已接驳槽位 | 把 session 对应的槽位标为在线，并写入最近心跳时间 |
 | `dispatch` | mentor | 校验等级和消费锁，创建队列 1 票。`target_slot_id` 可省略；写上时槽位必须存在且模板与目标模板相同，离线也可以接票 |
-| `claim` | worker | 校验槽位、queued 状态和领取冲突，在本地事务中记录领取者。票上有目标槽位时，只有该槽位能领取，其他 worker 在改状态之前得到 forbidden |
-| `abandon_claim` | worker | 只有当前领取者能把 claimed 票退回队列 1，清空领取者，并删除该票的文件锁；原 mentor 的消费锁仍绑定这张票 |
-| `submit` | worker | 校验领取者，把票从队列 1 推到队列 3 |
+| `claim` | worker | 只领取 `target_slot_id` 等于该 worker 的 queued 票。未绑定目标，或目标是其他槽位时，在改状态之前返回 `forbidden`，且不带回那张票的 state、queue 或 claimant |
+| `abandon_claim` | worker | 只有当前领取者能把目标是自己的 claimed 票退回队列 1，清空领取者，并删除该票的文件锁；原 mentor 的消费锁仍绑定这张票。目标不是自己时在改状态之前返回 `forbidden` |
+| `submit` | worker | 校验领取者，把目标是自己的票从队列 1 推到队列 3。目标不是自己时在改状态之前返回 `forbidden` |
 | `review` | checker | 从队列 3 取票，产生 accepted/rejected 结论并放入队列 2 |
 | `consume` | 原 mentor | 只能消费自己发出的 ticket id；消费后释放消费锁和该票的文件锁 |
-| `acquire_file_lock` | 已领取票的 worker | 在 Ling 本地记录 ticket、持有槽位和路径；冲突路径不能被另一张票占用 |
+| `acquire_file_lock` | 已领取票的 worker | 只给目标是自己、且由自己领取的票记录路径；冲突路径不能被另一张票占用。目标不是自己时在写入之前返回 `forbidden` |
 | `acquire_controller_lease` | 已接驳的 `codex-commander` | 取得唯一总控租约并绑定当前 session。未过期的其他 session 得到 `conflict`。过期、已释放或 session 已撤销时在同一写事务里接管 |
 | `renew_controller_lease` | 当前租约的 session | 按配置的 TTL 延长自己的租约。没有可用租约时返回 `lease_required`，不改记录 |
 | `release_controller_lease` | 当前租约的 session | 释放自己的租约。没有可用租约时返回 `lease_required` |
 | `provision_slot` | 持有有效租约的 `codex-commander` | 为槽位创建或轮换凭据，只保存 SHA-256。worker、checker 和其他槽位得到 `forbidden`；没有租约得到 `lease_required` |
-| `dashboard` | 已接驳客户端 | 返回 Ling 自己的槽位、票据、队列、锁和心跳，不改状态。这一版仍不按槽位过滤，也不做总控专用投影 |
+| `dashboard` | 已接驳客户端 | 返回 Ling 自己的槽位、票据、队列、锁和心跳，不改状态。worker 只看到自己的槽位，以及 `target_slot_id` 等于该槽位的票和相关锁。mentor 与 checker 仍看完整快照。不做总控专用投影 |
 
 每个命令遵循同一顺序：
 
@@ -192,7 +192,7 @@ MCP 只是入站适配器。每个工具只做参数解析、身份提取、调�
 
 配置 `LING_COORDINATOR_URL`、可选的 `LING_COORDINATOR_API_KEY` 和 `LING_COORDINATOR_WORKSPACE` 之后，成功且非重放的注册、心跳、派发、领取、提交、审核和消费会投影到已有的 Agent Coordinator。部署者单独打开 `http://localhost:9889/dashboard`。失败调用、重放调用、dashboard 查询、attach 和 detach 不进入该队列。注册投影不包含原始 attachment token。队列满或投影失败只留在 stderr。Coordinator GUI 是外部可选观测界面，不是 Ling 内置界面。
 
-除注册、attach 和 detach 以外，工具调用都先要求当前 stdio 进程已经 attach。未接驳返回 `attachment_required`，并且不会进入用例，也不会通知 Coordinator。调用者身份只来自该 session。请求若带上不同的 `slot_id`、`issuer_slot_id` 或 `actor_slot_id`，返回 `forbidden`。省略时由 session 补上。`target_slot_id` 仍然只约束票据可以被谁领取。总控租约只发给已接驳的 `codex-commander`。worker、checker、其他槽位和伪造的 actor 得到 `forbidden`，不改租约。已接驳的指挥官没有可用租约时，续期、释放和凭据发放得到 `lease_required`。`tools/list` 和 dashboard 仍不对 worker 过滤，也没有总控专用投影。Coordinator 不新增端点；租约和凭据发放的成功结果仍走原有可选观测入口，投影列表不变。
+除注册、attach 和 detach 以外，工具调用都先要求当前 stdio 进程已经 attach。未接驳返回 `attachment_required`，并且不会进入用例，也不会通知 Coordinator。调用者身份只来自该 session。请求若带上不同的 `slot_id`、`issuer_slot_id` 或 `actor_slot_id`，返回 `forbidden`。省略时由 session 补上。`target_slot_id` 仍然只约束票据可以被谁领取，不能用来换成另一个查看者。worker 模板还有一张调用白名单：`ling_heartbeat`、`ling_dashboard`、`ling_claim`、`ling_abandon_claim`、`ling_submit`、`ling_acquire_file_lock`，加上 `ling_attach` 和 `ling_detach`。其余工具，包括派发、审核、消费、总控租约、凭据发放和 `ling_register_slot`，在进入用例之前返回 `forbidden`。`tools/list` 仍列出全部工具。dashboard 对 worker 在查询边界裁剪；mentor 和 checker 仍是完整快照。没有总控专用投影。总控租约只发给已接驳的 `codex-commander`。worker、checker、其他槽位和伪造的 actor 得到 `forbidden`，不改租约。已接驳的指挥官没有可用租约时，续期、释放和凭据发放得到 `lease_required`。Coordinator 不新增端点；租约和凭据发放的成功结果仍走原有可选观测入口，投影列表不变。被拒绝的调用和 dashboard 不通知 Coordinator。
 
 当前工具可以稳定为：
 
@@ -254,7 +254,7 @@ Ling 不选择模型，也不适配 Grok、Claude、Codex 或其他具体 Agent�
 4. 接入 MCP stdio 工具，让调用方自己的 Agent loop 可以驱动完整票据流。
 5. 增加只读 dashboard 查询。
 
-第 4 步和第 5 步已经接上。`python -m ling` 提供上面十二个工具，数据库路径来自 `--database` 或 `LING_DATABASE`。dashboard 走只读查询，并且在这一版对任何已接驳 session 返回完整快照。
+第 4 步和第 5 步已经接上。`python -m ling` 提供上面十二个工具，数据库路径来自 `--database` 或 `LING_DATABASE`。dashboard 走只读查询。worker session 只得到自己的投影；mentor 和 checker 仍得到完整快照。
 
 第一版不实现 FastAPI 页面、模型启动器或具体 Agent 适配器。可选的 Agent Coordinator 观测不是运行时依赖；未配置 URL 时它不存在。
 

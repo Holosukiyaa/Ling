@@ -27,7 +27,22 @@ from ling.interfaces.mcp.schemas import parse_input
 
 logger = logging.getLogger(__name__)
 
-_OPEN_TOOLS = frozenset({"ling_register_slot", "ling_attach", "ling_detach"})
+_CONNECTION_TOOLS = frozenset({"ling_attach", "ling_detach"})
+_BOOTSTRAP_TOOLS = frozenset({"ling_register_slot"})
+_WORKER_TEMPLATE_ID = "worker"
+_WORKER_CALLS = frozenset(
+    {
+        "ling_attach",
+        "ling_detach",
+        "ling_heartbeat",
+        "ling_dashboard",
+        "ling_claim",
+        "ling_abandon_claim",
+        "ling_submit",
+        "ling_acquire_file_lock",
+    }
+)
+_WORKER_FORBIDDEN = "worker session cannot call this tool"
 _BOUND_ACTOR = {
     "ling_heartbeat": "slot_id",
     "ling_dispatch": "issuer_slot_id",
@@ -123,7 +138,14 @@ def read_dashboard(deps: ToolDeps, function: Callable[..., Any]) -> dict[str, An
 
     unit = deps.open_unit_of_work()
     try:
-        return payload_from(function(uow=unit, ids=deps.ids, clock=deps.clock))
+        return payload_from(
+            function(
+                uow=unit,
+                ids=deps.ids,
+                clock=deps.clock,
+                viewer_slot_id=deps.attachment.slot_id,
+            )
+        )
     except Exception:
         logger.exception("dashboard failed")
         try:
@@ -249,11 +271,21 @@ def gate_attachment(
     use case is not called in that case.
     """
 
-    if name in _OPEN_TOOLS:
+    if name in _CONNECTION_TOOLS:
         return None, arguments
-    slot_id, refusal = _bound_slot(deps)
+    slot_id, template_id, refusal = _bound_slot(deps)
     if refusal is not None or slot_id is None:
+        if (
+            name in _BOOTSTRAP_TOOLS
+            and refusal is not None
+            and refusal.get("error_code") == ATTACHMENT_REQUIRED
+        ):
+            return None, arguments
         return refusal or failed(deps, ATTACHMENT_REQUIRED, "attachment required"), arguments
+    if template_id == _WORKER_TEMPLATE_ID and name not in _WORKER_CALLS:
+        return failed(deps, "forbidden", _WORKER_FORBIDDEN), arguments
+    if template_id is None:
+        return failed(deps, "forbidden", "attached session does not match"), arguments
     field = _BOUND_ACTOR.get(name)
     updated = dict(arguments)
     if field is not None:
@@ -287,23 +319,25 @@ def revoke_bound_session(deps: ToolDeps) -> None:
         deps.attachment.clear()
 
 
-def _bound_slot(deps: ToolDeps) -> tuple[str | None, dict[str, Any] | None]:
+def _bound_slot(
+    deps: ToolDeps,
+) -> tuple[str | None, str | None, dict[str, Any] | None]:
     session_id = deps.attachment.session_id
     if not session_id:
-        return None, failed(deps, ATTACHMENT_REQUIRED, "attachment required")
+        return None, None, failed(deps, ATTACHMENT_REQUIRED, "attachment required")
     unit = deps.open_unit_of_work()
     try:
         resolved = resolve_attachment(session_id, uow=unit, clock=deps.clock)
     except Exception:
         logger.exception("attachment lookup failed")
-        return None, failed(deps, "internal", "request failed")
+        return None, None, failed(deps, "internal", "request failed")
     finally:
         try:
             unit.close()
         except Exception:
             logger.exception("attachment lookup close failed")
     if resolved.error_code is not None or not resolved.slot_id:
-        return None, failed(deps, ATTACHMENT_REJECTED, "attachment rejected")
+        return None, None, failed(deps, ATTACHMENT_REJECTED, "attachment rejected")
     if deps.attachment.slot_id != resolved.slot_id:
-        return None, failed(deps, ATTACHMENT_REJECTED, "attachment rejected")
-    return resolved.slot_id, None
+        return None, None, failed(deps, ATTACHMENT_REJECTED, "attachment rejected")
+    return resolved.slot_id, resolved.template_id, None

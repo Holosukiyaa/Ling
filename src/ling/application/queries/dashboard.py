@@ -12,6 +12,8 @@ from ling.application.dto import (
 from ling.application.ports.clock import Clock
 from ling.application.ports.id_generator import IdGenerator
 from ling.application.ports.unit_of_work import UnitOfWork
+from ling.domain.agents.entities import WORKER_ID
+from ling.domain.agents.values import SlotId
 
 
 def execute(
@@ -19,8 +21,15 @@ def execute(
     uow: UnitOfWork,
     ids: IdGenerator,
     clock: Clock,
+    viewer_slot_id: str | None = None,
 ) -> DashboardResult:
-    """Collect the current local records. This query does not change them."""
+    """Collect the current local records. This query does not change them.
+
+    A worker viewer receives only its own slot and tickets targeted at that
+    slot. Mentor and checker viewers, and an omitted viewer, receive the full
+    snapshot. The viewer id comes from the attached session, not from a
+    request field.
+    """
 
     slots = tuple(
         DashboardSlot(
@@ -65,6 +74,14 @@ def execute(
             key=lambda item: item.ticket_id,
         )
     )
+    if _is_worker_view(uow, viewer_slot_id):
+        slots, tickets, consumption_locks, file_locks = _project_worker(
+            slots,
+            tickets,
+            consumption_locks,
+            file_locks,
+            viewer_slot_id or "",
+        )
     return DashboardResult(
         ok=True,
         operation_id=ids.new_operation_id(),
@@ -74,4 +91,60 @@ def execute(
         tickets=tickets,
         consumption_locks=consumption_locks,
         file_locks=file_locks,
+    )
+
+
+def _is_worker_view(uow: UnitOfWork, viewer_slot_id: str | None) -> bool:
+    """True when the session slot is a worker, or the viewer id is unusable.
+
+    An unknown viewer fails closed to the empty worker projection. Omitting
+    the viewer keeps the full snapshot for non-session callers.
+    """
+
+    if viewer_slot_id is None:
+        return False
+    try:
+        slot_id = SlotId(viewer_slot_id)
+    except ValueError:
+        return True
+    slot = uow.slots.get(slot_id)
+    if slot is None:
+        return True
+    return slot.template.template_id == WORKER_ID
+
+
+def _project_worker(
+    slots: tuple[DashboardSlot, ...],
+    tickets: tuple[DashboardTicket, ...],
+    consumption_locks: tuple[DashboardConsumptionLock, ...],
+    file_locks: tuple[DashboardFileLock, ...],
+    viewer_slot_id: str,
+) -> tuple[
+    tuple[DashboardSlot, ...],
+    tuple[DashboardTicket, ...],
+    tuple[DashboardConsumptionLock, ...],
+    tuple[DashboardFileLock, ...],
+]:
+    """Keep the viewer's slot and only tickets targeted at that exact slot.
+
+    Order stays the full-snapshot order. Untargeted tickets, other workers'
+    tickets, other claimants, other consumption locks, and file locks held
+    for another slot are omitted entirely.
+    """
+
+    visible = tuple(ticket for ticket in tickets if ticket.target_slot_id == viewer_slot_id)
+    visible_ids = {ticket.ticket_id for ticket in visible}
+    return (
+        tuple(slot for slot in slots if slot.slot_id == viewer_slot_id),
+        visible,
+        tuple(
+            lock
+            for lock in consumption_locks
+            if lock.ticket_id is not None and lock.ticket_id in visible_ids
+        ),
+        tuple(
+            lock
+            for lock in file_locks
+            if lock.ticket_id in visible_ids and lock.holder_slot_id == viewer_slot_id
+        ),
     )

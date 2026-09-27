@@ -88,6 +88,15 @@ def execute(
         uow.rollback()
         code, message = not_found(f"ticket {ticket_id.value} does not exist")
         return _plain(operation_id, occurred_at, code, message, ticket_id=ticket_id.value)
+    if ticket.target_slot_id != actor.slot_id:
+        uow.rollback()
+        return _plain(
+            operation_id,
+            occurred_at,
+            FORBIDDEN,
+            "ticket is not targeted at this worker",
+            ticket_id=ticket_id.value,
+        )
     try:
         ticket.submit(actor.slot_id)
     except DomainError as exc:

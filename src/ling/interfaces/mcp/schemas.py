@@ -82,7 +82,7 @@ class AcquireFileLockInput(_Mutating):
 
 
 class DashboardInput(_Input):
-    """Dashboard takes no arguments."""
+    """Dashboard takes no arguments. The attached session selects the projection."""
 
 
 class AcquireControllerLeaseInput(_Mutating):
