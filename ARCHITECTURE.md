@@ -180,9 +180,9 @@ SQLite 用 WAL。schema 版本记在 SQLite `user_version`，当前是 3。没�
 
 ## 6. MCP 边界
 
-MCP 只是入站适配器。每个工具只做参数解析、身份提取、调用 application 用例和错误映射，不包含权限判断、SQL 或 HTTP 调用。本地结果确定之后，server 先生成并写入 RuntimeEvent，再把成功且非重放的调用交给可选的 `RuntimeObserver`。Coordinator 失败不能改掉已经写下的事件，也不能改 MCP 返回。两条观测互不替代。RuntimeEvent 记录工具名、结果摘要和耗时，不记录业务正文，也不是 operation receipt，也不是业务状态。多个 Ling 进程可以共享同一个 JSONL 文件；`<LING_EVENT_LOG>.lock` 保证一次只写完整的一行。`LING_EVENT_LOG` 未设置时不创建日志文件，也不创建锁文件。事件写失败或加锁失败只留在 stderr，不能改写本地结果，也不能把成功变成 `internal`。日志轮转当前尚未实现。当前没有 Ling 内置 GUI。
+MCP 只是入站适配器。每个工具只做参数解析、身份提取、调用 application 用例和错误映射，不包含权限判断、SQL 或 HTTP 调用。本地结果确定之后，server 先生成并写入 RuntimeEvent，再把成功且非重放的调用交给可选的 `RuntimeObserver`。Coordinator 失败不能改掉已经写下的事件，也不能改 MCP 返回。两条观测互不替代。RuntimeEvent 记录工具名、结果摘要和耗时，不记录业务正文，也不是 operation receipt，也不是业务状态。多个 Ling 进程可以共享同一个 JSONL 文件；`<LING_EVENT_LOG>.lock` 保证一次只写完整的一行。`LING_EVENT_LOG` 未设置时不创建日志文件，也不创建锁文件。事件写失败或加锁失败只留在 stderr，不能改写本地结果，也不能把成功变成 `internal`。日志轮转当前尚未实现。本地 RuntimeEvent JSONL 是排障日志，不是 Ling 的界面。Ling 没有内置 GUI，也不启动 GUI、Agent 或 Coordinator。未设置 `LING_COORDINATOR_URL` 时，Ling 不产生外部请求，也可以单独运行。
 
-Coordinator 观测进入 infrastructure 的后台队列后立即返回，不等待 HTTP。失败结果、未知工具、dashboard 和 operation replay 不进入该队列。队列满或投影失败只留在 stderr。Coordinator GUI 仍是独立的可选外部页面，不是 Ling 内置界面。
+配置 `LING_COORDINATOR_URL`、可选的 `LING_COORDINATOR_API_KEY` 和 `LING_COORDINATOR_WORKSPACE` 之后，成功且非重放的注册、心跳、派发、领取、提交、审核和消费会投影到已有的 Agent Coordinator。部署者单独打开 `http://localhost:9889/dashboard`。失败调用、重放调用和 dashboard 查询不进入该队列。队列满或投影失败只留在 stderr。Coordinator GUI 是外部可选观测界面，不是 Ling 内置界面。
 
 第一批工具可以稳定为：
 
