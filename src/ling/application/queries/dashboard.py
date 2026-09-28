@@ -12,6 +12,7 @@ from ling.application.dto import (
 from ling.application.ports.clock import Clock
 from ling.application.ports.id_generator import IdGenerator
 from ling.application.ports.unit_of_work import ReadOnlyUnitOfWork
+from ling.application.queries.presence import DEFAULT_HEARTBEAT_STALE_SECONDS, classify_presence
 from ling.domain.agents.entities import WORKER_ID
 from ling.domain.agents.values import SlotId
 
@@ -22,6 +23,7 @@ def execute(
     ids: IdGenerator,
     clock: Clock,
     viewer_slot_id: str | None = None,
+    heartbeat_stale_seconds: int = DEFAULT_HEARTBEAT_STALE_SECONDS,
 ) -> DashboardResult:
     """Collect one committed snapshot. This query does not change rows or receipts.
 
@@ -31,13 +33,9 @@ def execute(
     request field.
     """
 
+    now = clock.now()
     slots = tuple(
-        DashboardSlot(
-            slot_id=slot.slot_id.value,
-            template_id=slot.template.template_id.value,
-            online=slot.online,
-            last_heartbeat_at=slot.last_heartbeat_at,
-        )
+        _slot_row(slot, now, heartbeat_stale_seconds)
         for slot in uow.slots.list()
     )
     tickets = tuple(
@@ -91,6 +89,24 @@ def execute(
         tickets=tickets,
         consumption_locks=consumption_locks,
         file_locks=file_locks,
+    )
+
+
+def _slot_row(slot: object, now: object, stale_seconds: int) -> DashboardSlot:
+    """Compute presence from the heartbeat time. The stored flag is not copied."""
+
+    from datetime import datetime
+
+    last = getattr(slot, "last_heartbeat_at")
+    moment = now if isinstance(now, datetime) else datetime.now().astimezone()
+    online, presence, age = classify_presence(last if isinstance(last, datetime) else None, moment, stale_seconds)
+    return DashboardSlot(
+        slot_id=slot.slot_id.value,
+        template_id=slot.template.template_id.value,
+        online=online,
+        last_heartbeat_at=last if isinstance(last, datetime) else None,
+        presence=presence,
+        heartbeat_age_seconds=age,
     )
 
 

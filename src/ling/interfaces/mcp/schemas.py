@@ -85,6 +85,12 @@ class DashboardInput(_Input):
     """Dashboard takes no arguments. The attached session selects the projection."""
 
 
+class DiagnosticsInput(_Input):
+    """Optional request id. The attached session decides whether it is visible."""
+
+    request_id: str | None = Field(default=None, min_length=1)
+
+
 class AcquireControllerLeaseInput(_Mutating):
     actor_slot_id: str | None = Field(default=None, min_length=1)
 

@@ -8,6 +8,7 @@ import os
 import sys
 
 from ling.bootstrap.container import serve
+from ling.infrastructure.observability.paths import OutputCollision
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -25,7 +26,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.help:
         print(
             "usage: python -m ling --database PATH\n"
-            "       LING_DATABASE may supply the same path.",
+            "       python -m ling.runtime --database PATH --event-log LOG --state-file STATE\n"
+            "       python -m ling.diagnostics --database PATH --event-log LOG --state-file STATE\n"
+            "       LING_DATABASE may supply the MCP database path.",
             file=sys.stderr,
         )
         return 0
@@ -38,8 +41,11 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     try:
         serve(database)
+    except OutputCollision as exc:
+        print(f"ling: {exc}", file=sys.stderr)
+        return 2
     except Exception:
-        logging.exception("ling server stopped")
+        logging.getLogger(__name__).warning("ling server stopped")
         print("ling: server stopped", file=sys.stderr)
         return 1
     return 0

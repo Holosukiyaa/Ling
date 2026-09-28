@@ -82,3 +82,73 @@ def _positive_int(raw: object) -> int | None:
     if value <= 0:
         return None
     return value
+
+
+DEFAULT_HEARTBEAT_STALE_SECONDS = 900
+DEFAULT_PROGRESS_STALE_SECONDS = 1800
+DEFAULT_REQUEST_TIMEOUT_SECONDS = 1800
+DEFAULT_INSPECT_INTERVAL_SECONDS = 5.0
+DEFAULT_PING_INTERVAL_SECONDS = 30.0
+DEFAULT_PING_TIMEOUT_SECONDS = 2.0
+DEFAULT_QUEUE_POLL_SECONDS = 1.0
+
+
+def heartbeat_stale_seconds(raw: object) -> int:
+    """Return the presence threshold. Blank or illegal values use 900 seconds."""
+
+    parsed = _positive_int(raw)
+    if parsed is None:
+        return DEFAULT_HEARTBEAT_STALE_SECONDS
+    return parsed
+
+
+def progress_stale_seconds(raw: object) -> int:
+    """Return the ticket no-progress threshold. Blank or illegal values use 1800."""
+
+    parsed = _positive_int(raw)
+    if parsed is None:
+        return DEFAULT_PROGRESS_STALE_SECONDS
+    return parsed
+
+
+def request_timeout_seconds(raw: object) -> int:
+    """Return the unfinished-request threshold. Blank or illegal values use 1800."""
+
+    parsed = _positive_int(raw)
+    if parsed is None:
+        return DEFAULT_REQUEST_TIMEOUT_SECONDS
+    return parsed
+
+
+def positive_seconds(raw: object, default: float) -> float:
+    """Return a positive number of seconds, or `default` when the value is illegal."""
+
+    if raw is None:
+        return default
+    text = str(raw).strip()
+    if not text:
+        return default
+    try:
+        value = float(text)
+    except ValueError:
+        return default
+    if value <= 0:
+        return default
+    return value
+
+
+def positive_seconds_rejected(raw: object) -> bool:
+    """True when a non-empty setting is not a positive number."""
+
+    if raw is None:
+        return False
+    text = str(raw).strip()
+    if not text:
+        return False
+    return positive_seconds(raw, -1) <= 0
+
+
+def new_instance_id() -> str:
+    """Return a runtime instance id. It is not a session id or a credential."""
+
+    return uuid4().hex

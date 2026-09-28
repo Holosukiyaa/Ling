@@ -262,6 +262,8 @@ class DashboardSlot:
     template_id: str
     online: bool
     last_heartbeat_at: datetime | None
+    presence: str = "unknown"
+    heartbeat_age_seconds: int | None = None
 
 
 @dataclass(frozen=True, slots=True)

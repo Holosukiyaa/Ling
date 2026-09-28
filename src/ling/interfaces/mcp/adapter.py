@@ -21,11 +21,19 @@ from ling.application.ports.clock import Clock
 from ling.application.ports.id_generator import IdGenerator
 from ling.application.ports.observability import NullRuntimeEventSink, RuntimeEventSink
 from ling.application.ports.observer import NullRuntimeObserver, RuntimeObserver
+from ling.application.ports.storage import StorageFailure
 from ling.application.ports.unit_of_work import ReadOnlyUnitOfWork, UnitOfWork
 from ling.application.queries.resolve_attachment import execute as resolve_attachment
+from ling.interfaces.mcp.request_context import warn_failure
 from ling.interfaces.mcp.schemas import parse_input
 
 logger = logging.getLogger(__name__)
+
+
+def _no_event_log() -> tuple[tuple[dict[str, Any], ...], tuple[dict[str, str], ...]]:
+    """No log is configured. That is not a read failure."""
+
+    return (), ()
 
 _CONNECTION_TOOLS = frozenset({"ling_attach", "ling_detach"})
 _BOOTSTRAP_TOOLS = frozenset({"ling_register_slot"})
@@ -38,12 +46,14 @@ _WORKER_CALLS = frozenset(
         "ling_detach",
         "ling_heartbeat",
         "ling_dashboard",
+        "ling_diagnostics",
         "ling_claim",
         "ling_abandon_claim",
         "ling_submit",
         "ling_acquire_file_lock",
     }
 )
+_READ_ONLY_TOOLS = frozenset({"ling_dashboard", "ling_diagnostics"})
 _WORKER_FORBIDDEN = "worker session cannot call this tool"
 _BOUND_ACTOR = {
     "ling_heartbeat": "slot_id",
@@ -94,6 +104,20 @@ class ToolDeps:
     attachment: AttachmentBinding = field(default_factory=AttachmentBinding)
     attachment_ttl_seconds: int = 3600
     controller_lease_ttl_seconds: int = 3600
+    heartbeat_stale_seconds: int = 900
+    progress_stale_seconds: int = 1800
+    request_timeout_seconds: int = 1800
+    ping_interval_seconds: float = 30.0
+    ping_timeout_seconds: float = 2.0
+    queue_poll_seconds: float = 1.0
+    runtime_instance_id: str = ""
+    observation_enabled: bool = False
+    read_events: Callable[[], tuple[tuple[dict[str, Any], ...], tuple[dict[str, str], ...]]] = field(
+        default=_no_event_log
+    )
+    recent_requests: list[dict[str, Any]] = field(default_factory=list)
+    subscriptions: dict[str, dict[str, Any]] = field(default_factory=dict)
+    runtime_state: dict[str, Any] = field(default_factory=dict)
 
 
 def rejected(deps: ToolDeps, message: str, *, ticket_id: str | None = None) -> dict[str, Any]:
@@ -107,65 +131,73 @@ def rejected(deps: ToolDeps, message: str, *, ticket_id: str | None = None) -> d
         "queue": None,
         "error_code": "invalid_input",
         "message": message,
+        "_commit_state": "not_started",
     }
+
+
+def open_unit(deps: ToolDeps, *, read_only: bool) -> tuple[object | None, dict[str, Any] | None]:
+    """Open one unit. A failure before the transaction starts is not an internal error."""
+
+    try:
+        if read_only:
+            return deps.open_read_unit_of_work(), None
+        return deps.open_unit_of_work(), None
+    except StorageFailure as exc:
+        return None, _storage_payload(deps, exc)
+    except Exception as exc:
+        warn_failure(logger, "storage open failed", exc)
+        return None, _internal_payload(deps, "not_started")
 
 
 def call_use_case(deps: ToolDeps, function: Callable[..., Any], command: object) -> dict[str, Any]:
     """Open one unit of work, call the use case, and hide unexpected failures."""
 
-    unit = deps.open_unit_of_work()
+    unit, failure = open_unit(deps, read_only=False)
+    if failure is not None or unit is None:
+        return failure or _internal_payload(deps, "not_started")
     try:
         result = function(command, uow=unit, ids=deps.ids, clock=deps.clock)
-        return payload_from(result)
-    except Exception:
-        logger.exception("use case failed")
-        try:
-            unit.rollback()
-        except Exception:
-            logger.exception("rollback failed")
-        return {
-            "ok": False,
-            "operation_id": deps.ids.new_operation_id(),
-            "ticket_id": None,
-            "state": None,
-            "queue": None,
-            "error_code": "internal",
-            "message": "request failed",
-        }
+        payload = payload_from(result)
+        payload["_commit_state"] = "committed" if payload.get("ok") else "not_committed"
+        return payload
+    except StorageFailure as exc:
+        _safe_rollback(unit)
+        return _storage_payload(deps, exc)
+    except Exception as exc:
+        warn_failure(logger, "use case failed", exc)
+        _safe_rollback(unit)
+        return _internal_payload(deps, "unknown")
     finally:
-        unit.close()
+        _safe_close(unit)
 
 
 def read_dashboard(deps: ToolDeps, function: Callable[..., Any]) -> dict[str, Any]:
     """Open one read snapshot, return it, and finish that connection."""
 
-    unit = deps.open_read_unit_of_work()
+    unit, failure = open_unit(deps, read_only=True)
+    if failure is not None or unit is None:
+        return failure or _internal_payload(deps, "not_started")
     try:
-        return payload_from(
+        payload = payload_from(
             function(
                 uow=unit,
                 ids=deps.ids,
                 clock=deps.clock,
                 viewer_slot_id=deps.attachment.slot_id,
+                heartbeat_stale_seconds=deps.heartbeat_stale_seconds,
             )
         )
-    except Exception:
-        logger.exception("dashboard failed")
-        try:
-            unit.rollback()
-        except Exception:
-            logger.exception("rollback failed")
-        return {
-            "ok": False,
-            "operation_id": deps.ids.new_operation_id(),
-            "ticket_id": None,
-            "state": None,
-            "queue": None,
-            "error_code": "internal",
-            "message": "request failed",
-        }
+        payload["_commit_state"] = "not_started"
+        return payload
+    except StorageFailure as exc:
+        _safe_rollback(unit)
+        return _storage_payload(deps, exc)
+    except Exception as exc:
+        warn_failure(logger, "dashboard failed", exc)
+        _safe_rollback(unit)
+        return _internal_payload(deps, "unknown")
     finally:
-        unit.close()
+        _safe_close(unit)
 
 
 def validated(model: type[BaseModel], arguments: dict[str, Any], deps: ToolDeps) -> tuple[BaseModel | None, dict[str, Any] | None]:
@@ -236,6 +268,7 @@ def failed(deps: ToolDeps, code: str, message: str) -> dict[str, Any]:
         "queue": None,
         "error_code": code,
         "message": message,
+        "_commit_state": "not_started",
     }
 
 
@@ -274,9 +307,11 @@ def gate_attachment(
     use case is not called in that case.
     """
 
+    if name == "ling_diagnostics":
+        return None, arguments
     if name in _CONNECTION_TOOLS:
         return None, arguments
-    slot_id, template_id, refusal = _bound_slot(deps, read_only=name == "ling_dashboard")
+    slot_id, template_id, refusal = _bound_slot(deps, read_only=name in _READ_ONLY_TOOLS)
     if refusal is not None or slot_id is None:
         if (
             name in _BOOTSTRAP_TOOLS
@@ -316,8 +351,8 @@ def revoke_bound_session(deps: ToolDeps) -> None:
                 )
             finally:
                 unit.close()
-    except Exception:
-        logger.exception("attachment revoke failed")
+    except Exception as exc:
+        warn_failure(logger, "attachment revoke failed", exc)
     finally:
         deps.attachment.clear()
 
@@ -332,17 +367,19 @@ def _bound_slot(
     session_id = deps.attachment.session_id
     if not session_id:
         return None, None, failed(deps, ATTACHMENT_REQUIRED, "attachment required")
-    unit = deps.open_read_unit_of_work() if read_only else deps.open_unit_of_work()
+    unit, failure = open_unit(deps, read_only=read_only)
+    if failure is not None or unit is None:
+        return None, None, failure or _internal_payload(deps, "not_started")
     try:
         resolved = resolve_attachment(session_id, uow=unit, clock=deps.clock)
-    except Exception:
-        logger.exception("attachment lookup failed")
-        return None, None, failed(deps, "internal", "request failed")
+    except StorageFailure as exc:
+        warn_failure(logger, "attachment lookup failed")
+        return None, None, _storage_payload(deps, exc)
+    except Exception as exc:
+        warn_failure(logger, "attachment lookup failed", exc)
+        return None, None, _internal_payload(deps, "unknown")
     finally:
-        try:
-            unit.close()
-        except Exception:
-            logger.exception("attachment lookup close failed")
+        _safe_close(unit)
     if resolved.error_code is not None or not resolved.slot_id:
         return None, None, failed(deps, ATTACHMENT_REJECTED, "attachment rejected")
     if deps.attachment.slot_id != resolved.slot_id:
@@ -364,23 +401,68 @@ class ToolDiscovery:
 
 
 def discover_tools(deps: ToolDeps) -> ToolDiscovery:
-    """Choose tools/list names from the stored session, not a cached slot id.
+    """Return the stable public catalog. Identity does not change the names.
 
-    An unbound process does not open the database. A bound process reads the
-    session and slot through the deferred unit. Worker names are `_WORKER_CALLS`.
+    Authorization stays on the call. This function does not open the database.
     """
 
-    slot_id, template_id, refusal = _bound_slot(deps, read_only=True)
-    if refusal is not None:
-        if refusal.get("error_code") == "internal":
-            return ToolDiscovery(names=frozenset(), failed=True)
-        if refusal.get("error_code") == ATTACHMENT_REQUIRED:
-            return ToolDiscovery(_BOOTSTRAP_DISCOVERY)
-        return ToolDiscovery(_CONNECTION_TOOLS)
-    if not slot_id:
-        return ToolDiscovery(_CONNECTION_TOOLS)
-    if template_id == _WORKER_TEMPLATE_ID:
-        return ToolDiscovery(_WORKER_CALLS)
-    if template_id in _FULL_DISCOVERY_TEMPLATES:
-        return ToolDiscovery(None)
-    return ToolDiscovery(_CONNECTION_TOOLS)
+    del deps
+    return ToolDiscovery(names=None, failed=False)
+
+
+def _storage_payload(deps: ToolDeps, exc: StorageFailure) -> dict[str, Any]:
+    """Map a storage failure to a stable code. Commit doubt stays unknown."""
+
+    if exc.kind == "busy":
+        code = "storage_busy"
+        message = "storage is busy"
+        reason = "sqlite_busy"
+        commit_state = "not_started" if exc.phase == "begin" else "not_committed"
+    elif exc.phase == "begin":
+        code = "storage_unavailable"
+        message = "storage is unavailable"
+        reason = "database_unavailable"
+        commit_state = "not_started"
+    elif exc.kind == "unavailable":
+        code = "storage_unavailable"
+        message = "storage is unavailable"
+        reason = "database_unavailable"
+        commit_state = "unknown"
+    elif exc.phase == "commit":
+        code = "storage_unavailable"
+        message = "storage is unavailable"
+        reason = "commit_unknown"
+        commit_state = "unknown"
+    else:
+        return _internal_payload(deps, "unknown")
+    payload = failed(deps, code, message)
+    payload["_commit_state"] = commit_state
+    payload["_reason_code"] = reason
+    return payload
+
+
+def _internal_payload(deps: ToolDeps, commit_state: str) -> dict[str, Any]:
+    payload = failed(deps, "internal", "request failed")
+    payload["_commit_state"] = commit_state
+    payload["_reason_code"] = "unexpected"
+    return payload
+
+
+def _safe_rollback(unit: object) -> None:
+    rollback = getattr(unit, "rollback", None)
+    if not callable(rollback):
+        return
+    try:
+        rollback()
+    except Exception as exc:
+        warn_failure(logger, "rollback failed", exc)
+
+
+def _safe_close(unit: object) -> None:
+    close = getattr(unit, "close", None)
+    if not callable(close):
+        return
+    try:
+        close()
+    except Exception as exc:
+        warn_failure(logger, "unit close failed", exc)

@@ -9,8 +9,8 @@ from pathlib import Path
 from types import TracebackType
 from typing import Protocol
 
-from ling.infrastructure.persistence.sqlite.connection import connect
-from ling.infrastructure.persistence.sqlite.errors import StorageError
+from ling.infrastructure.persistence.sqlite.connection import connect, connect_readonly
+from ling.infrastructure.persistence.sqlite.errors import StorageError, storage_kind
 from ling.infrastructure.persistence.sqlite.repositories import (
     SqliteAttachmentSessionRepository,
     SqliteConsumptionLockRepository,
@@ -24,7 +24,7 @@ from ling.infrastructure.persistence.sqlite.repositories import (
     release_file_lock_rows,
     update_aggregate,
 )
-from ling.infrastructure.persistence.sqlite.schema import initialize
+from ling.infrastructure.persistence.sqlite.schema import SCHEMA_VERSION, initialize
 
 
 class _Closeable(Protocol):
@@ -37,14 +37,39 @@ class SqliteDatabase:
 
     def __init__(self, path: str | Path) -> None:
         self.path = str(path)
+        self._readonly = False
         self._units: list[_Closeable] = []
         self._units_lock = threading.Lock()
         with _closing(connect(self.path)) as connection:
             initialize(connection)
 
+    @classmethod
+    def open_existing_readonly(cls, path: str | Path) -> SqliteDatabase:
+        """Open a supported database without creating, migrating, or writing it."""
+
+        location = Path(path)
+        if not location.is_file():
+            raise StorageError("sqlite database is unavailable", kind="unavailable", phase="begin")
+        probe = connect_readonly(location)
+        try:
+            row = probe.execute("PRAGMA user_version").fetchone()
+            version = 0 if row is None else int(row[0])
+        finally:
+            probe.close()
+        if version != SCHEMA_VERSION:
+            raise StorageError("sqlite database is unavailable", kind="unavailable", phase="begin")
+        database = cls.__new__(cls)
+        database.path = str(location)
+        database._readonly = True
+        database._units = []
+        database._units_lock = threading.Lock()
+        return database
+
     def unit_of_work(self) -> SqliteUnitOfWork:
         """Open a new unit of work on its own connection."""
 
+        if self._readonly:
+            raise StorageError("sqlite database is unavailable", kind="failed", phase="begin")
         unit = SqliteUnitOfWork(connect(self.path), on_close=self._forget)
         with self._units_lock:
             self._units.append(unit)
@@ -53,7 +78,8 @@ class SqliteDatabase:
     def read_unit_of_work(self) -> SqliteReadUnitOfWork:
         """Open a deferred read snapshot on its own connection."""
 
-        unit = SqliteReadUnitOfWork(connect(self.path), on_close=self._forget)
+        connector = connect_readonly if self._readonly else connect
+        unit = SqliteReadUnitOfWork(connector(self.path), on_close=self._forget)
         with self._units_lock:
             self._units.append(unit)
         return unit
@@ -178,9 +204,13 @@ class SqliteUnitOfWork:
             for ticket_id in self._released_file_locks:
                 release_file_lock_rows(connection, ticket_id)
             connection.execute("COMMIT")
-        except Exception:
+        except Exception as exc:
             self._rollback_sql()
-            raise
+            if isinstance(exc, StorageError):
+                exc.phase = "commit"
+                raise
+            kind = storage_kind(exc) if isinstance(exc, sqlite3.Error) else "failed"
+            raise StorageError("sqlite transaction failed", kind=kind, phase="commit") from exc
         self._transaction = False
         self._loaded.update(written)
         self._loaded.difference_update(("file_lock", ticket_id) for ticket_id in self._released_file_locks)
@@ -241,7 +271,11 @@ class SqliteUnitOfWork:
         try:
             connection.execute("BEGIN IMMEDIATE")
         except sqlite3.Error as exc:
-            raise StorageError("sqlite transaction failed") from exc
+            raise StorageError(
+                "sqlite transaction failed",
+                kind=storage_kind(exc),
+                phase="begin",
+            ) from exc
         self._transaction = True
 
     def _rollback_sql(self) -> None:
@@ -304,7 +338,11 @@ class SqliteReadUnitOfWork:
         try:
             connection.execute("BEGIN")
         except sqlite3.Error as exc:
-            raise StorageError("sqlite transaction failed") from exc
+            raise StorageError(
+                "sqlite transaction failed",
+                kind=storage_kind(exc),
+                phase="begin",
+            ) from exc
         self._transaction = True
 
     def release_file_lock(self, ticket_id: str) -> None:

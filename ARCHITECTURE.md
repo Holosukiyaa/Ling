@@ -168,7 +168,8 @@ mentor 消费     consumed     不再可消费
 | `renew_controller_lease` | 当前租约的 session | 按配置的 TTL 延长自己的租约。没有可用租约时返回 `lease_required`，不改记录 |
 | `release_controller_lease` | 当前租约的 session | 释放自己的租约。没有可用租约时返回 `lease_required` |
 | `provision_slot` | 持有有效租约的 `codex-commander` | 为槽位创建或轮换凭据，只保存 SHA-256。worker、checker 和其他槽位得到 `forbidden`；没有租约得到 `lease_required` |
-| `dashboard` | 已接驳客户端 | 返回 Ling 自己的槽位、票据、队列、锁和心跳，不改状态。worker 只看到自己的槽位，以及 `target_slot_id` 等于该槽位的票和相关锁。mentor 与 checker 仍看完整快照。不做总控专用投影 |
+| `dashboard` | 已接驳客户端 | 返回槽位、票据、队列、锁和心跳，不改状态。`online` 由心跳时间计算，并带 `presence` 与 `heartbeat_age_seconds`。worker 只看到自己的槽位，以及 `target_slot_id` 等于该槽位的票和相关锁。mentor 与 checker 仍看完整快照。不做总控专用投影 |
+| `diagnostics` | 当前 session，未接驳也可调用 | 返回脱敏诊断。未接驳不读全局库。不改票据、锁或租约 |
 
 每个命令遵循同一顺序：
 
@@ -188,11 +189,11 @@ SQLite 用 WAL。schema 版本记在 SQLite `user_version`，当前是 6。没�
 
 ## 6. MCP 边界
 
-MCP 只是入站适配器。每个工具只做参数解析、身份提取、调用 application 用例和错误映射，不包含权限判断、SQL 或 HTTP 调用。本地结果确定之后，server 先生成并写入 RuntimeEvent，再把成功且非重放的调用交给可选的 `RuntimeObserver`。Coordinator 失败不能改掉已经写下的事件，也不能改 MCP 返回。两条观测互不替代。RuntimeEvent 记录工具名、结果摘要和耗时，不记录业务正文，也不是 operation receipt，也不是业务状态。多个 Ling 进程可以共享同一个 JSONL 文件；`<LING_EVENT_LOG>.lock` 保证一次只写完整的一行。`LING_EVENT_LOG` 未设置时不创建日志文件，也不创建锁文件。事件写失败或加锁失败只留在 stderr，不能改写本地结果，也不能把成功变成 `internal`。日志轮转可选：`LING_EVENT_LOG_MAX_BYTES` 未设置时只追加；设置后在同一把 `<LING_EVENT_LOG>.lock` 里把当前文件改名为 `.1`、`.2` 等，默认保留 3 个备份。本地 RuntimeEvent JSONL 是排障日志，不是 domain 状态，也不是 Ling 的界面，不影响 Agent Coordinator GUI 或 MCP。Ling 没有内置 GUI，也不启动 GUI、Agent 或 Coordinator。未设置 `LING_COORDINATOR_URL` 时，Ling 不产生外部请求，也可以单独运行。
+MCP 只是入站适配器。每个工具只做参数解析、身份提取、调用 application 用例和错误映射，不包含权限判断、SQL 或 HTTP 调用。本地结果确定之后，server 先生成并写入 RuntimeEvent，再把成功且非重放的调用交给可选的 `RuntimeObserver`。Coordinator 失败不能改掉已经写下的事件，也不能改 MCP 返回。两条观测互不替代。RuntimeEvent 记录工具名、结果摘要和耗时，不记录业务正文，也不是 operation receipt，也不是业务状态。多个 Ling 进程可以共享同一个 JSONL 文件；`<LING_EVENT_LOG>.lock` 保证一次只写完整的一行。`LING_EVENT_LOG` 未设置时不创建日志文件，也不创建锁文件。事件写失败或加锁失败只留在 stderr，不能改写本地结果，也不能把成功变成 `internal`。日志轮转可选：`LING_EVENT_LOG_MAX_BYTES` 未设置时只追加；设置后在同一把 `<LING_EVENT_LOG>.lock` 里把当前文件改名为 `.1`、`.2` 等，默认保留 3 个备份。MCP、`python -m ling.diagnostics` 和 runtime 按同一有效范围读取：没有正整数大小上限时只读当前文件；有上限时读取当前文件和 `.1` 到 `.N`。坏记录、半行和读失败进入诊断告警，不把读失败当成空日志，也不把没读到的请求说成没有发生。本地 RuntimeEvent JSONL 是排障日志，不是 domain 状态，也不是 Ling 的界面，不影响 Agent Coordinator GUI 或 MCP。Ling 没有内置 GUI，也不启动 GUI、Agent 或 Coordinator。未设置 `LING_COORDINATOR_URL` 时，Ling 不产生外部请求，也可以单独运行。
 
 配置 `LING_COORDINATOR_URL`、可选的 `LING_COORDINATOR_API_KEY` 和 `LING_COORDINATOR_WORKSPACE` 之后，成功且非重放的注册、心跳、派发、领取、提交、审核和消费会投影到已有的 Agent Coordinator。部署者单独打开 `http://localhost:9889/dashboard`。失败调用、重放调用、dashboard 查询、attach 和 detach 不进入该队列。注册投影不包含原始 attachment token。队列满或投影失败只留在 stderr。Coordinator GUI 是外部可选观测界面，不是 Ling 内置界面。
 
-除注册、attach 和 detach 以外，工具调用都先要求当前 stdio 进程已经 attach。未接驳返回 `attachment_required`，并且不会进入用例，也不会通知 Coordinator。调用者身份只来自该 session。请求若带上不同的 `slot_id`、`issuer_slot_id` 或 `actor_slot_id`，返回 `forbidden`。省略时由 session 补上。`target_slot_id` 仍然只约束票据可以被谁领取，不能用来换成另一个查看者。worker 模板还有一张调用白名单：`ling_heartbeat`、`ling_dashboard`、`ling_claim`、`ling_abandon_claim`、`ling_submit`、`ling_acquire_file_lock`，加上 `ling_attach` 和 `ling_detach`。其余工具，包括派发、审核、消费、总控租约、凭据发放和 `ling_register_slot`，在进入用例之前返回 `forbidden`。`tools/list` 按当前接驳身份从注册定义中选择可见项，不另建 schema 或路由。未接驳只列出注册、attach 和 detach；有效 worker 只列出八项调用白名单并保持原顺序；有效 mentor 和 checker 仍列出全部工具；未知模板不会得到完整列表；槽位模板无法按已知声明读出时，发现按读取失败返回。已绑定但 session 失效时只留下 attach 和 detach。未绑定不访问数据库。已绑定的发现通过只读单元重新读取 session 和槽位，普通 `BEGIN`，不占写锁，不写状态，不读 operation receipt。读取失败是 MCP 错误，不是完整列表，并留下 stderr 和失败 RuntimeEvent。`tools/list` 不通知 Coordinator。直接调用未列出的工具仍进入原来的 gate。初始化声明 `tools.listChanged`。同一次连接上，成功 attach 或 detach 改变绑定后发送 `notifications/tools/list_changed`；失败和重复空 detach 不发送。通知失败只留 stderr。过期或外部撤销等到下一次 list 或调用再验证。dashboard 对 worker 在查询边界裁剪；mentor 和 checker 仍是完整快照。没有总控专用投影。总控租约只发给已接驳的 `codex-commander`。worker、checker、其他槽位和伪造的 actor 得到 `forbidden`，不改租约。已接驳的指挥官没有可用租约时，续期、释放和凭据发放得到 `lease_required`。Coordinator 不新增端点；租约和凭据发放的成功结果仍走原有可选观测入口，投影列表不变。被拒绝的调用和 dashboard 不通知 Coordinator。
+除注册、attach、detach 和只读 `ling_diagnostics` 以外，工具调用都先要求当前 stdio 进程已经 attach。未接驳的诊断不读取全局库。未接驳返回 `attachment_required`，并且不会进入用例，也不会通知 Coordinator。调用者身份只来自该 session。请求若带上不同的 `slot_id`、`issuer_slot_id` 或 `actor_slot_id`，返回 `forbidden`。省略时由 session 补上。`target_slot_id` 仍然只约束票据可以被谁领取，不能用来换成另一个查看者。worker 模板还有一张调用白名单：`ling_heartbeat`、`ling_dashboard`、`ling_diagnostics`、`ling_claim`、`ling_abandon_claim`、`ling_submit`、`ling_acquire_file_lock`，加上 `ling_attach` 和 `ling_detach`。其余工具，包括派发、审核、消费、总控租约、凭据发放和 `ling_register_slot`，在进入用例之前返回 `forbidden`。`tools/list` 始终返回同一份公共目录，包括 `ling_diagnostics`，不访问数据库，也不按身份删减。业务调用和队列快照在每条连接的一把锁后面进入工作线程，避免写锁等待堵住协议 ping；取消等待不会把已经开始的事务假装成已回滚。订阅在返回成功前记下可见队列基线。通知带有订阅代次，真正发送前会再核对代次、订阅和当前身份；detach、过期或重新绑定会使已准备的旧通知作废。发送失败不把变化记成已送达。已经进入传输的无正文变更提示可能在撤销之后才交付，这不能撤回，也不允许撤销后再用旧身份开始发送。请求在进入连接锁之前记下 received，完成结果只来自实际执行或实际写出的响应；证据不足时结果是 unknown，不能把请求里的协议版本当成协商结果。重放事件不推进票据进展。运行诊断按 `instance_id` 区分连接，MCP 诊断只报告本连接。打开数据库失败且事务未开始时返回 `storage_unavailable` 和 `commit_state=not_started`。worker 白名单增加只读 `ling_diagnostics`，其余越权调用仍在 gate 返回 `forbidden`。初始化声明 `resources.subscribe`。成功 attach 或 detach 不再发送 `notifications/tools/list_changed`。队列资源是固定的 `ling://queue`；订阅者用只读快照检测变化，worker 只看目标是自己的票据。dashboard 对 worker 在查询边界裁剪；mentor 和 checker 仍是完整快照。没有总控专用投影。总控租约只发给已接驳的 `codex-commander`。worker、checker、其他槽位和伪造的 actor 得到 `forbidden`，不改租约。已接驳的指挥官没有可用租约时，续期、释放和凭据发放得到 `lease_required`。Coordinator 不新增端点；租约和凭据发放的成功结果仍走原有可选观测入口，投影列表不变。被拒绝的调用和 dashboard 不通知 Coordinator。
 
 当前工具可以稳定为：
 
@@ -213,9 +214,10 @@ ling_acquire_controller_lease
 ling_renew_controller_lease
 ling_release_controller_lease
 ling_provision_slot
+ling_diagnostics
 ```
 
-工具返回统一的结构化结果：`ok`、`operation_id`、`ticket_id`、`state`、`queue`、`error_code` 和可读消息。缺字段、类型错误和空字符串是 `invalid_input`。权限和状态机错误沿用用例的错误码，例如 `forbidden`、`invalid_transition`、`already_claimed`、`not_found`、`conflict`。未预期的失败是 `internal`，客户端只看到这句说明，堆栈留在 stderr。
+工具返回统一的结构化结果：`ok`、`operation_id`、`ticket_id`、`state`、`queue`、`error_code` 和可读消息。缺字段、类型错误和空字符串是 `invalid_input`。权限和状态机错误沿用用例的错误码，例如 `forbidden`、`invalid_transition`、`already_claimed`、`not_found`、`conflict`。未预期的失败是 `internal`，客户端只看到 `request failed` 和 `commit_state=unknown`。stderr 只记异常类型，不记堆栈、凭据或路径。请求处理中的内层异常带上同一次 `request_id`；没有请求背景的日志不借用上一次的编号。
 
 调用方的 loop 位于 Ling 进程之外：
 
