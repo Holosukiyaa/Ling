@@ -11,12 +11,12 @@ from datetime import datetime, timezone
 from typing import Any
 
 import mcp.types as types
-from mcp.server.lowlevel import Server
+from mcp.server.lowlevel import NotificationOptions, Server
 from mcp.server.stdio import stdio_server
 from pydantic import BaseModel
 
 from ling.application.ports.observability import RUNTIME_EVENT_SCHEMA, RuntimeEvent
-from ling.interfaces.mcp.adapter import ToolDeps, gate_attachment, redact_arguments
+from ling.interfaces.mcp.adapter import ToolDeps, discover_tools, gate_attachment, redact_arguments
 from ling.interfaces.mcp.schemas import (
     TOOL_OUTPUT_SCHEMA,
     AbandonClaimInput,
@@ -56,6 +56,7 @@ from ling.interfaces.mcp.tools.submit import handle as submit
 logger = logging.getLogger(__name__)
 
 _SILENT_TOOLS = frozenset({"ling_attach", "ling_detach", "ling_dashboard"})
+_BINDING_TOOLS = frozenset({"ling_attach", "ling_detach"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -183,6 +184,10 @@ def build_server(deps: ToolDeps) -> Server:
             "ling_claim, ling_abandon_claim, ling_submit, ling_acquire_file_lock, "
             "ling_attach, and ling_detach. Its dashboard shows only its own slot "
             "and tickets targeted at that slot. "
+            "tools/list shows register, attach, and detach before a session is "
+            "attached; a worker sees only those eight call tools; mentor and "
+            "checker still see the full registry; an invalid session sees only "
+            "attach and detach. "
             "Only the attached codex-commander session can hold the controller lease "
             "and provision slot credentials."
         ),
@@ -191,6 +196,10 @@ def build_server(deps: ToolDeps) -> Server:
     async def list_tools() -> list[types.Tool]:
         started = time.perf_counter()
         try:
+            discovered = discover_tools(deps)
+            if discovered.failed:
+                raise RuntimeError("tool discovery failed")
+            allowed = discovered.names
             listed = [
                 types.Tool(
                     name=tool.name,
@@ -199,8 +208,10 @@ def build_server(deps: ToolDeps) -> Server:
                     outputSchema=TOOL_OUTPUT_SCHEMA,
                 )
                 for tool in _TOOLS
+                if allowed is None or tool.name in allowed
             ]
         except Exception:
+            logger.exception("tools/list failed")
             _record(deps, "tools/list", _internal_payload(deps), False, started)
             raise
         _record(
@@ -214,7 +225,11 @@ def build_server(deps: ToolDeps) -> Server:
 
     @server.call_tool(validate_input=False)
     async def call_tool(name: str, arguments: dict[str, Any] | None) -> types.CallToolResult:
+        before = (deps.attachment.session_id, deps.attachment.slot_id)
         payload = invoke_tool(deps, name, arguments)
+        after = (deps.attachment.session_id, deps.attachment.slot_id)
+        if name in _BINDING_TOOLS and payload.get("ok") and before != after:
+            await _notify_tool_list_changed(server)
         return types.CallToolResult(
             content=[types.TextContent(type="text", text=json.dumps(payload))],
             structuredContent=payload,
@@ -325,6 +340,15 @@ def _queue(value: object) -> int | None:
     return value
 
 
+async def _notify_tool_list_changed(server: Server) -> None:
+    """Tell this connection that tools/list changed. A send failure stays on stderr."""
+
+    try:
+        await server.request_context.session.send_tool_list_changed()
+    except Exception:
+        logger.exception("tool list change notification failed")
+
+
 async def run_stdio(server: Server) -> None:
     """Serve MCP on stdio. Protocol bytes stay on stdout."""
 
@@ -332,5 +356,7 @@ async def run_stdio(server: Server) -> None:
         await server.run(
             read_stream,
             write_stream,
-            server.create_initialization_options(),
+            server.create_initialization_options(
+                notification_options=NotificationOptions(tools_changed=True),
+            ),
         )

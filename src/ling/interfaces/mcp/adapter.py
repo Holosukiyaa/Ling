@@ -29,7 +29,9 @@ logger = logging.getLogger(__name__)
 
 _CONNECTION_TOOLS = frozenset({"ling_attach", "ling_detach"})
 _BOOTSTRAP_TOOLS = frozenset({"ling_register_slot"})
+_BOOTSTRAP_DISCOVERY = _BOOTSTRAP_TOOLS | _CONNECTION_TOOLS
 _WORKER_TEMPLATE_ID = "worker"
+_FULL_DISCOVERY_TEMPLATES = frozenset({"mentor", "checker"})
 _WORKER_CALLS = frozenset(
     {
         "ling_attach",
@@ -346,3 +348,39 @@ def _bound_slot(
     if deps.attachment.slot_id != resolved.slot_id:
         return None, None, failed(deps, ATTACHMENT_REJECTED, "attachment rejected")
     return resolved.slot_id, resolved.template_id, None
+
+
+@dataclass(frozen=True, slots=True)
+class ToolDiscovery:
+    """Registered names this binding may list.
+
+    `names` is None only for a mentor or checker session, which still sees the
+    whole registry. `failed` means the lookup broke; the caller must return an
+    MCP error instead of any tool list.
+    """
+
+    names: frozenset[str] | None = None
+    failed: bool = False
+
+
+def discover_tools(deps: ToolDeps) -> ToolDiscovery:
+    """Choose tools/list names from the stored session, not a cached slot id.
+
+    An unbound process does not open the database. A bound process reads the
+    session and slot through the deferred unit. Worker names are `_WORKER_CALLS`.
+    """
+
+    slot_id, template_id, refusal = _bound_slot(deps, read_only=True)
+    if refusal is not None:
+        if refusal.get("error_code") == "internal":
+            return ToolDiscovery(names=frozenset(), failed=True)
+        if refusal.get("error_code") == ATTACHMENT_REQUIRED:
+            return ToolDiscovery(_BOOTSTRAP_DISCOVERY)
+        return ToolDiscovery(_CONNECTION_TOOLS)
+    if not slot_id:
+        return ToolDiscovery(_CONNECTION_TOOLS)
+    if template_id == _WORKER_TEMPLATE_ID:
+        return ToolDiscovery(_WORKER_CALLS)
+    if template_id in _FULL_DISCOVERY_TEMPLATES:
+        return ToolDiscovery(None)
+    return ToolDiscovery(_CONNECTION_TOOLS)
